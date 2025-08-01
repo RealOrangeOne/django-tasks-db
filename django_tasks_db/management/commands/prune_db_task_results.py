@@ -9,8 +9,8 @@ from django.utils import timezone
 from django_tasks_db import DEFAULT_QUEUE_NAME, DEFAULT_TASK_BACKEND_ALIAS, tasks
 from django_tasks_db.backend import DatabaseBackend
 from django_tasks_db.models import DBTaskResult
+from django_tasks.base import ResultStatus
 from django_tasks.exceptions import InvalidTaskBackendError
-from django_tasks_db.task import ResultStatus
 
 logger = logging.getLogger("django_tasks_db.prune_db_task_results")
 
