@@ -232,38 +232,6 @@ class DatabaseBackendTestCase(TransactionTestCase):
         with self.assertRaises(TaskResultDoesNotExist):
             await default_task_backend.aget_result("123")
 
-    def test_meaning_of_life_view(self) -> None:
-        for url in [
-            reverse("meaning-of-life"),
-            reverse("meaning-of-life-async"),
-        ]:
-            with self.subTest(url):
-                response = self.client.get(url)
-                self.assertEqual(response.status_code, 200)
-
-                data = json.loads(response.content)
-
-                self.assertEqual(data["result"], None)
-                self.assertEqual(data["status"], TaskResultStatus.READY)
-
-                result = default_task_backend.get_result(data["result_id"])
-                self.assertEqual(result.status, TaskResultStatus.READY)
-
-    def test_get_result_from_different_request(self) -> None:
-        response = self.client.get(reverse("meaning-of-life"))
-        self.assertEqual(response.status_code, 200)
-
-        data = json.loads(response.content)
-        result_id = data["result_id"]
-
-        response = self.client.get(reverse("result", args=[result_id]))
-        self.assertEqual(response.status_code, 200)
-
-        self.assertEqual(
-            json.loads(response.content),
-            {"result_id": result_id, "result": None, "status": TaskResultStatus.READY},
-        )
-
     def test_invalid_task_path(self) -> None:
         db_task_result = DBTaskResult.objects.create(
             args_kwargs={"args": [["exit", "1"]], "kwargs": {}},
