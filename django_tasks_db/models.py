@@ -137,7 +137,7 @@ class DBTaskResult(GenericBase[P, T], models.Model):
             models.Index(
                 "status",
                 *ordering,
-                name="django_task_new_ordering_idx",
+                name="tasks_db_new_ordering_idx",
                 condition=Q(status=TaskResultStatus.READY),
             ),
             models.Index(fields=["queue_name"]),
