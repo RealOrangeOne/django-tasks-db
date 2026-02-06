@@ -159,17 +159,3 @@ class DatabaseBackend(BaseTaskBackend):
                 f"{backend_name} configured as django_tasks_db backend, but database app not installed",
                 "Insert 'django_tasks_db' in INSTALLED_APPS",
             )
-
-    def save_metadata(self, result_id: str, metadata: dict[str, Any]) -> None:
-        from .models import DBTaskResult
-
-        DBTaskResult.objects.filter(id=result_id).update(
-            metadata=normalize_json(metadata)
-        )
-
-    async def asave_metadata(self, result_id: str, metadata: dict[str, Any]) -> None:
-        from .models import DBTaskResult
-
-        await DBTaskResult.objects.filter(id=result_id).aupdate(
-            metadata=normalize_json(metadata)
-        )
