@@ -9,7 +9,7 @@ from django.db.models.functions import Coalesce
 def separate_exception_fields(
     apps: StateApps, schema_editor: BaseDatabaseSchemaEditor
 ) -> None:
-    DBTaskResult = apps.get_model("django_tasks_db_database", "DBTaskResult")
+    DBTaskResult = apps.get_model("django_tasks_database", "DBTaskResult")
 
     DBTaskResult.objects.using(schema_editor.connection.alias).update(
         exception_class_path=Coalesce(
@@ -24,7 +24,7 @@ def separate_exception_fields(
 
 class Migration(migrations.Migration):
     dependencies = [
-        ("django_tasks_db_database", "0012_add_separate_exception_fields"),
+        ("django_tasks_database", "0012_add_separate_exception_fields"),
     ]
 
     operations = [migrations.RunPython(separate_exception_fields)]

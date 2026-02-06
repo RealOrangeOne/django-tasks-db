@@ -6,7 +6,7 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
     dependencies = [
         (
-            "django_tasks_db_database",
+            "django_tasks_database",
             "0016_remove_dbtaskresult_django_task_new_ordering_idx_and_more",
         ),
     ]

@@ -6,7 +6,7 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
     dependencies = [
         (
-            "django_tasks_db_database",
+            "django_tasks_database",
             "0003_dbtaskresult_enqueued_at_dbtaskresult_finished_at",
         ),
     ]

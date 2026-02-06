@@ -5,7 +5,7 @@ from django.db import migrations, models
 
 class Migration(migrations.Migration):
     dependencies = [
-        ("django_tasks_db_database", "0011_rename_complete_status"),
+        ("django_tasks_database", "0011_rename_complete_status"),
     ]
 
     operations = [

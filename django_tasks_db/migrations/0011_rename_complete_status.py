@@ -8,7 +8,7 @@ from django.db.migrations.state import StateApps
 def separate_results_field(
     apps: StateApps, schema_editor: BaseDatabaseSchemaEditor
 ) -> None:
-    DBTaskResult = apps.get_model("django_tasks_db_database", "DBTaskResult")
+    DBTaskResult = apps.get_model("django_tasks_database", "DBTaskResult")
 
     DBTaskResult.objects.using(schema_editor.connection.alias).filter(
         status="COMPLETE"
@@ -18,7 +18,7 @@ def separate_results_field(
 def merge_results_field(
     apps: StateApps, schema_editor: BaseDatabaseSchemaEditor
 ) -> None:
-    DBTaskResult = apps.get_model("django_tasks_db_database", "DBTaskResult")
+    DBTaskResult = apps.get_model("django_tasks_database", "DBTaskResult")
 
     DBTaskResult.objects.using(schema_editor.connection.alias).filter(
         status="SUCCEEDED"
@@ -27,7 +27,7 @@ def merge_results_field(
 
 class Migration(migrations.Migration):
     dependencies = [
-        ("django_tasks_db_database", "0010_alter_dbtaskresult_status"),
+        ("django_tasks_database", "0010_alter_dbtaskresult_status"),
     ]
 
     operations = [migrations.RunPython(separate_results_field, merge_results_field)]
