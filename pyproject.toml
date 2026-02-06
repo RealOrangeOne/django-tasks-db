@@ -6,7 +6,7 @@ requires = [
 
 [project]
 name = "django-tasks-db"
-description = "An implementation and backport of background workers and tasks in Django"
+description = "An ORM-based backend for Django Tasks"
 authors = [
     {name = "Jake Howard"},
 ]
