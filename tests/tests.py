@@ -374,7 +374,7 @@ class DatabaseBackendTestCase(TransactionTestCase):
             self.assertEqual(self.get_task_count_in_new_connection(), 1)
 
     def test_enqueue_logs(self) -> None:
-        with self.assertLogs("django_tasks_db", level="DEBUG") as captured_logs:
+        with self.assertLogs("django_tasks", level="DEBUG") as captured_logs:
             result = test_tasks.noop_task.enqueue()
 
         self.assertEqual(len(captured_logs.output), 1)
@@ -570,10 +570,14 @@ class DatabaseBackendWorkerTestCase(TransactionTestCase):
 
     def tearDown(self) -> None:
         logger = logging.getLogger("django_tasks_db")
+        tasks_logger = logging.getLogger("django_tasks")
 
         # Reset the logger after every run, to ensure the correct `stdout` is used
         for handler in logger.handlers:
             logger.removeHandler(handler)
+
+        for handler in tasks_logger.handlers:
+            tasks_logger.removeHandler(handler)
 
     def test_run_enqueued_task(self) -> None:
         for task in [
