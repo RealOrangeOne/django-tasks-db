@@ -59,14 +59,6 @@ def skipIfInMemoryDB() -> Any:  # noqa:N802
     )
 
 
-@override_settings(
-    TASKS={
-        "default": {
-            "BACKEND": "django_tasks_db.DatabaseBackend",
-            "QUEUES": ["default", "queue-1"],
-        }
-    }
-)
 class DatabaseBackendTestCase(TransactionTestCase):
     @contextlib.contextmanager
     def _capture_task_enqueued_signal(
@@ -450,7 +442,7 @@ class DatabaseBackendTestCase(TransactionTestCase):
         with override_settings(
             TASKS={
                 "default": {
-                    "BACKEND": "django_tasks_db.backends.rq.RQBackend",
+                    "BACKEND": "django_tasks_db.DatabaseBackend",
                     "QUEUES": ["unknown_queue"],
                 }
             }
@@ -468,7 +460,7 @@ class DatabaseBackendTestCase(TransactionTestCase):
         with override_settings(
             TASKS={
                 "default": {
-                    "BACKEND": "django_tasks_db.backends.rq.RQBackend",
+                    "BACKEND": "django_tasks_db.DatabaseBackend",
                     "QUEUES": ["unknown_queue"],
                 }
             }
@@ -550,7 +542,7 @@ class DatabaseBackendTestCase(TransactionTestCase):
             "BACKEND": "django_tasks_db.DatabaseBackend",
             "QUEUES": ["default", "queue-1"],
         },
-        "dummy": {"BACKEND": "django_tasks_db.backends.dummy.DummyBackend"},
+        "dummy": {"BACKEND": "django_tasks.backends.dummy.DummyBackend"},
     }
 )
 class DatabaseBackendWorkerTestCase(TransactionTestCase):
@@ -1310,7 +1302,7 @@ class ConnectionExclusiveTranscationTestCase(TransactionTestCase):
             "BACKEND": "django_tasks_db.DatabaseBackend",
             "QUEUES": ["default", "queue-1"],
         },
-        "dummy": {"BACKEND": "django_tasks_db.backends.dummy.DummyBackend"},
+        "dummy": {"BACKEND": "django_tasks.backends.dummy.DummyBackend"},
     }
 )
 class DatabaseBackendPruneTaskResultsTestCase(TransactionTestCase):
