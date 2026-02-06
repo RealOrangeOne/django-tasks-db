@@ -14,15 +14,15 @@ from django.core.management.base import BaseCommand
 from django.db import close_old_connections
 from django.db.utils import OperationalError
 from django.utils.autoreload import DJANGO_AUTORELOAD_ENV, run_with_reloader
-
-from django_tasks_db import DEFAULT_TASK_BACKEND_ALIAS, task_backends
-from django_tasks_db.backend import DatabaseBackend
-from django_tasks_db.models import DBTaskResult
-from django_tasks_db.utils import exclusive_transaction
+from django_tasks import DEFAULT_TASK_BACKEND_ALIAS, task_backends
 from django_tasks.base import DEFAULT_TASK_QUEUE_NAME, TaskContext
 from django_tasks.exceptions import InvalidTaskBackendError
 from django_tasks.signals import task_finished, task_started
-from django_tasks_db.utils import get_random_id
+from django_tasks.utils import get_random_id
+
+from django_tasks_db.backend import DatabaseBackend
+from django_tasks_db.models import DBTaskResult
+from django_tasks_db.utils import exclusive_transaction
 
 package_logger = logging.getLogger("django_tasks_db")
 logger = logging.getLogger("django_tasks_db.db_worker")

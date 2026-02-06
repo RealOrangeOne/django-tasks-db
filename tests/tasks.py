@@ -1,7 +1,7 @@
 import time
 from typing import Any
 
-from django_tasks_db import TaskContext, task
+from django_tasks import TaskContext, task
 
 
 @task()

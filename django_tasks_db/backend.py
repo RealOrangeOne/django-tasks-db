@@ -9,14 +9,13 @@ from django.core.exceptions import ImproperlyConfigured, ValidationError
 from django.db.models import Expression
 from django.utils.module_loading import import_string
 from django.utils.version import PY311
-from typing_extensions import ParamSpec
-
 from django_tasks.backends.base import BaseTaskBackend
 from django_tasks.base import Task
 from django_tasks.base import TaskResult as BaseTaskResult
 from django_tasks.exceptions import TaskResultDoesNotExist
 from django_tasks.signals import task_enqueued
-from django_tasks_db.utils import normalize_json
+from django_tasks.utils import normalize_json
+from typing_extensions import ParamSpec
 
 if TYPE_CHECKING:
     from .models import DBTaskResult

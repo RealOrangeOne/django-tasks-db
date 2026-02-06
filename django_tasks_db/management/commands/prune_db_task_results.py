@@ -5,16 +5,16 @@ from datetime import timedelta
 from django.core.management.base import BaseCommand
 from django.db.models import Q
 from django.utils import timezone
-
-from django_tasks_db import (
+from django_tasks import (
     DEFAULT_TASK_BACKEND_ALIAS,
     DEFAULT_TASK_QUEUE_NAME,
     task_backends,
 )
-from django_tasks_db.backend import DatabaseBackend
-from django_tasks_db.models import DBTaskResult
 from django_tasks.base import TaskResultStatus
 from django_tasks.exceptions import InvalidTaskBackendError
+
+from django_tasks_db.backend import DatabaseBackend
+from django_tasks_db.models import DBTaskResult
 
 logger = logging.getLogger("django_tasks_db.prune_db_task_results")
 

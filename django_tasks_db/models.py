@@ -12,8 +12,6 @@ from django.db.models.constraints import CheckConstraint
 from django.utils import timezone
 from django.utils.module_loading import import_string
 from django.utils.translation import gettext_lazy as _
-from typing_extensions import ParamSpec
-
 from django_tasks.base import (
     DEFAULT_TASK_PRIORITY,
     DEFAULT_TASK_QUEUE_NAME,
@@ -23,15 +21,15 @@ from django_tasks.base import (
     TaskError,
     TaskResultStatus,
 )
-from django_tasks_db.compat import TASK_CLASSES
-from django_tasks_db.utils import (
+from django_tasks.compat import TASK_CLASSES
+from django_tasks.utils import (
     get_exception_traceback,
     get_module_path,
     normalize_json,
-    retry,
 )
+from typing_extensions import ParamSpec
 
-from .utils import normalize_uuid
+from .utils import normalize_uuid, retry
 
 logger = logging.getLogger("django_tasks_db")
 
