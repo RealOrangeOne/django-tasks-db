@@ -12,7 +12,7 @@ A [Django Tasks](https://docs.djangoproject.com/en/stable/topics/tasks/) backend
 ## Installation
 
 ```
-python -m pip install django-tasks
+python -m pip install django-tasks-db
 ```
 
 First, add `django_tasks_db` to your `INSTALLED_APPS`:
