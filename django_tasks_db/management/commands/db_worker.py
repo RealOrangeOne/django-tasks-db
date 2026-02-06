@@ -24,8 +24,7 @@ from django_tasks_db.backend import DatabaseBackend
 from django_tasks_db.models import DBTaskResult
 from django_tasks_db.utils import exclusive_transaction
 
-package_logger = logging.getLogger("django_tasks_db")
-logger = logging.getLogger("django_tasks_db.db_worker")
+logger = logging.getLogger("django_tasks_db")
 
 
 class Worker:
@@ -290,17 +289,25 @@ class Command(BaseCommand):
         )
 
     def configure_logging(self, verbosity: int) -> None:
+        tasks_logger = logging.getLogger("django_tasks")
+
         if verbosity == 0:
-            package_logger.setLevel(logging.CRITICAL)
+            tasks_logger.setLevel(logging.CRITICAL)
+            logger.setLevel(logging.CRITICAL)
         elif verbosity == 1:
-            package_logger.setLevel(logging.INFO)
+            tasks_logger.setLevel(logging.INFO)
+            logger.setLevel(logging.INFO)
         else:
-            package_logger.setLevel(logging.DEBUG)
+            tasks_logger.setLevel(logging.DEBUG)
+            logger.setLevel(logging.DEBUG)
 
         # If no handler is configured, the logs won't show,
         # regardless of the set level.
-        if not package_logger.hasHandlers():
-            package_logger.addHandler(logging.StreamHandler(self.stdout))
+        if not tasks_logger.hasHandlers():
+            tasks_logger.addHandler(logging.StreamHandler(self.stdout))
+
+        if not logger.hasHandlers():
+            logger.addHandler(logging.StreamHandler(self.stdout))
 
     def handle(
         self,
