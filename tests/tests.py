@@ -24,9 +24,8 @@ from django.core.management import call_command, execute_from_command_line
 from django.db import connection, connections, transaction
 from django.db.models import QuerySet
 from django.db.utils import IntegrityError, OperationalError
-from django.test import TransactionTestCase, override_settings
+from django.test import SimpleTestCase, TransactionTestCase, override_settings
 from django.test.testcases import _deferredSkip  # type:ignore[attr-defined]
-from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 from django_tasks import (
     TaskResultStatus,
@@ -38,7 +37,7 @@ from django_tasks.exceptions import InvalidTaskError, TaskResultDoesNotExist
 from django_tasks.signals import task_enqueued
 from django_tasks.utils import get_random_id
 
-from django_tasks_db import DatabaseBackend
+from django_tasks_db import DatabaseBackend, compat
 from django_tasks_db.management.commands.prune_db_task_results import (
     logger as prune_db_tasks_logger,
 )
@@ -968,37 +967,6 @@ class DatabaseBackendWorkerTestCase(TransactionTestCase):
 
         self.assertEqual(result.status, TaskResultStatus.SUCCESSFUL)
 
-    def test_metadata(self) -> None:
-        result = test_tasks.add_to_metadata.enqueue({"foo": "bar"})
-        self.assertNotIn("foo", result.metadata)
-        self.run_worker()
-        result.refresh()
-        self.assertEqual(result.status, TaskResultStatus.SUCCESSFUL)
-        self.assertEqual(result.metadata["foo"], "bar")
-
-    def test_save_metadata(self) -> None:
-        for task in [test_tasks.save_metadata, test_tasks.asave_metadata]:
-            with self.subTest(task):
-                result = task.enqueue()  # type: ignore[attr-defined]
-                self.assertNotIn("flushes", result.metadata)
-
-                with CaptureQueriesContext(connection) as c:
-                    self.run_worker()
-
-                result.refresh()
-                self.assertEqual(result.status, TaskResultStatus.SUCCESSFUL)
-                self.assertEqual(result.metadata["flushes"], "flush 2")
-
-                update_queries = [
-                    q["sql"]
-                    for q in c.captured_queries
-                    if q["sql"].startswith("UPDATE")
-                ]
-
-                self.assertEqual(len(update_queries), 3)
-                metadata_update_query = update_queries[1]
-                self.assertIn("flush 1", metadata_update_query)
-
     def test_task_import_string(self) -> None:
         db_task_result = DBTaskResult.objects.create(
             args_kwargs={"args": [], "kwargs": {}},
@@ -1717,3 +1685,13 @@ class DatabaseWorkerProcessTestCase(TransactionTestCase):
         for result in results:
             # Running and successful
             self.assertEqual(all_output.count(result.id), 2)
+
+
+class CompatTestCase(SimpleTestCase):
+    def test_compat_has_django_task(self) -> None:
+        self.assertIn(Task, compat.TASK_CLASSES)
+
+        if VERSION >= (6, 0):
+            from django.tasks.base import Task as DjangoTask
+
+            self.assertIn(DjangoTask, compat.TASK_CLASSES)
