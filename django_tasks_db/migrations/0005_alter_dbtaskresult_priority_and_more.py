@@ -15,7 +15,7 @@ else:
 
 class Migration(migrations.Migration):
     dependencies = [
-        ("django_tasks_db_database", "0004_dbtaskresult_started_at"),
+        ("django_tasks_database", "0004_dbtaskresult_started_at"),
     ]
 
     operations = [

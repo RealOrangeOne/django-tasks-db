@@ -5,7 +5,7 @@ from django.db import migrations, models
 
 class Migration(migrations.Migration):
     dependencies = [
-        ("django_tasks_db_database", "0006_alter_dbtaskresult_args_kwargs_and_more"),
+        ("django_tasks_database", "0006_alter_dbtaskresult_args_kwargs_and_more"),
     ]
 
     operations = [

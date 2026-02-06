@@ -9,7 +9,7 @@ from django.db.migrations.state import StateApps
 
 
 def update_status(apps: StateApps, schema_editor: BaseDatabaseSchemaEditor) -> None:
-    DBTaskResult = apps.get_model("django_tasks_db_database", "DBTaskResult")
+    DBTaskResult = apps.get_model("django_tasks_database", "DBTaskResult")
 
     DBTaskResult.objects.filter(status="NEW").update(status="READY")
 
@@ -17,14 +17,14 @@ def update_status(apps: StateApps, schema_editor: BaseDatabaseSchemaEditor) -> N
 def revert_status_rename(
     apps: StateApps, schema_editor: BaseDatabaseSchemaEditor
 ) -> None:
-    DBTaskResult = apps.get_model("django_tasks_db_database", "DBTaskResult")
+    DBTaskResult = apps.get_model("django_tasks_database", "DBTaskResult")
 
     DBTaskResult.objects.filter(status="READY").update(status="NEW")
 
 
 class Migration(migrations.Migration):
     dependencies = [
-        ("django_tasks_db_database", "0015_correctly_order_run_after"),
+        ("django_tasks_database", "0015_correctly_order_run_after"),
     ]
 
     operations = [

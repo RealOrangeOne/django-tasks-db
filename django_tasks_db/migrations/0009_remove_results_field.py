@@ -5,7 +5,7 @@ from django.db import migrations
 
 class Migration(migrations.Migration):
     dependencies = [
-        ("django_tasks_db_database", "0008_separate_results_field"),
+        ("django_tasks_database", "0008_separate_results_field"),
     ]
 
     operations = [

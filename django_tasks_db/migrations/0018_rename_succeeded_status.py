@@ -6,14 +6,14 @@ from django.db.migrations.state import StateApps
 
 
 def forwards(apps: StateApps, schema_editor: BaseDatabaseSchemaEditor) -> None:
-    DBTaskResult = apps.get_model("django_tasks_db_database", "DBTaskResult")
+    DBTaskResult = apps.get_model("django_tasks_database", "DBTaskResult")
     DBTaskResult.objects.using(schema_editor.connection.alias).filter(
         status="SUCCEEDED"
     ).update(status="SUCCESSFUL")
 
 
 def backwards(apps: StateApps, schema_editor: BaseDatabaseSchemaEditor) -> None:
-    DBTaskResult = apps.get_model("django_tasks_db_database", "DBTaskResult")
+    DBTaskResult = apps.get_model("django_tasks_database", "DBTaskResult")
     DBTaskResult.objects.using(schema_editor.connection.alias).filter(
         status="SUCCESSFUL"
     ).update(status="SUCCEEDED")
@@ -21,7 +21,7 @@ def backwards(apps: StateApps, schema_editor: BaseDatabaseSchemaEditor) -> None:
 
 class Migration(migrations.Migration):
     dependencies = [
-        ("django_tasks_db_database", "0017_dbtaskresult_metadata"),
+        ("django_tasks_database", "0017_dbtaskresult_metadata"),
     ]
 
     operations = [
