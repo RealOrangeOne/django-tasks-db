@@ -398,12 +398,12 @@ class DatabaseBackendTestCase(TransactionTestCase):
         plan = DBTaskResult.objects.ready().explain()
 
         if connection.vendor == "postgresql":
-            self.assertIn("django_task_new_ordering_idx", plan)
+            self.assertIn("tasks_db_new_ordering_idx", plan)
         elif connection.vendor == "sqlite":
-            self.assertIn("USING INDEX django_task_new_ordering_idx", plan)
+            self.assertIn("USING INDEX tasks_db_new_ordering_idx", plan)
         elif connection.vendor == "mysql":
             self.assertIn("Index lookup", plan)
-            self.assertIn("using django_task_new_ordering_idx", plan)
+            self.assertIn("using tasks_db_new_ordering_idx", plan)
         else:
             self.fail("Unknown database engine")
 
