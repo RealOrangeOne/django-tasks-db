@@ -510,6 +510,7 @@ class DatabaseBackendTestCase(TransactionTestCase):
         "default": {
             "BACKEND": "django_tasks_db.DatabaseBackend",
             "QUEUES": ["default", "queue-1"],
+            "OPTIONS": {"database": "default"},
         },
         "dummy": {"BACKEND": "django_tasks.backends.dummy.DummyBackend"},
     }
@@ -1467,7 +1468,7 @@ class DatabaseBackendPruneTaskResultsTestCase(TransactionTestCase):
 )
 @skipIfInMemoryDB()
 class DatabaseWorkerProcessTestCase(TransactionTestCase):
-    WORKER_STARTUP_TIME = 1
+    WORKER_STARTUP_TIME = 2
 
     def setUp(self) -> None:
         self.processes: list[subprocess.Popen] = []
@@ -1550,7 +1551,7 @@ class DatabaseWorkerProcessTestCase(TransactionTestCase):
             signal.SIGTERM,
         ]:
             with self.subTest(sig):
-                result = test_tasks.sleep_for.enqueue(2)
+                result = test_tasks.sleep_for.enqueue(3)
                 self.assertEqual(DBTaskResult.objects.get(id=result.id).worker_ids, [])
 
                 self.assertGreater(result.args[0], self.WORKER_STARTUP_TIME)
@@ -1568,7 +1569,7 @@ class DatabaseWorkerProcessTestCase(TransactionTestCase):
 
                 process.send_signal(sig)
 
-                process.wait(timeout=2)
+                process.wait(timeout=3)
 
                 self.assertEqual(process.returncode, 0)
 
@@ -1728,3 +1729,97 @@ class AdminTestCase(TestCase):
         result = self.admin.display_run_after(db_task_result)
 
         self.assertEqual(result, expected_run_after)
+
+
+@override_settings(
+    TASKS={
+        "default": {
+            "BACKEND": "django_tasks_db.DatabaseBackend",
+            "OPTIONS": {"database": "default"},
+        },
+        "secondary": {
+            "BACKEND": "django_tasks_db.DatabaseBackend",
+            "OPTIONS": {"database": "secondary"},
+        },
+    }
+)
+class DatabaseSelectionTestCase(TransactionTestCase):
+    databases = {"default", "secondary"}
+
+    def tearDown(self) -> None:
+        logger = logging.getLogger("django_tasks_db")
+        tasks_logger = logging.getLogger("django_tasks")
+
+        # Reset the logger after every run, to ensure the correct `stdout` is used
+        for handler in logger.handlers:
+            logger.removeHandler(handler)
+
+        for handler in tasks_logger.handlers:
+            tasks_logger.removeHandler(handler)
+
+    def test_enqueue_to_different_databases(self) -> None:
+        result_default = test_tasks.calculate_meaning_of_life.enqueue()
+
+        result_secondary = test_tasks.calculate_meaning_of_life.using(
+            backend="secondary"
+        ).enqueue()
+
+        self.assertTrue(
+            DBTaskResult.objects.using("default").filter(id=result_default.id).exists()
+        )
+        self.assertFalse(
+            DBTaskResult.objects.using("secondary")
+            .filter(id=result_default.id)
+            .exists()
+        )
+
+        self.assertTrue(
+            DBTaskResult.objects.using("secondary")
+            .filter(id=result_secondary.id)
+            .exists()
+        )
+        self.assertFalse(
+            DBTaskResult.objects.using("default")
+            .filter(id=result_secondary.id)
+            .exists()
+        )
+
+    def test_get_result_from_correct_database(self) -> None:
+        backend = task_backends["secondary"]
+        default_backend = task_backends["default"]
+
+        db_result = DBTaskResult.objects.using("secondary").create(
+            task_path="tests.tasks.calculate_meaning_of_life",
+            args_kwargs={"args": [], "kwargs": {}},
+            run_after=test_tasks.calculate_meaning_of_life.run_after,
+            backend_name="secondary",
+        )
+
+        retrieved_result = backend.get_result(db_result.id)
+        self.assertEqual(retrieved_result.id, str(db_result.id))
+
+        with self.assertRaises(DBTaskResult.DoesNotExist):
+            DBTaskResult.objects.using("default").get(id=db_result.id)
+
+        with self.assertRaises(TaskResultDoesNotExist):
+            default_backend.get_result(db_result.id)
+
+    def test_worker_uses_correct_database(self) -> None:
+        result = test_tasks.calculate_meaning_of_life.using(
+            backend="secondary"
+        ).enqueue()
+
+        self.assertEqual(DBTaskResult.objects.ready().using("secondary").count(), 1)
+        self.assertEqual(DBTaskResult.objects.ready().using("default").count(), 0)
+
+        call_command(
+            "db_worker",
+            verbosity=0,
+            batch=True,
+            interval=0,
+            startup_delay=False,
+            backend_name="secondary",
+        )
+
+        result.refresh()
+        self.assertEqual(result.status, TaskResultStatus.SUCCESSFUL)
