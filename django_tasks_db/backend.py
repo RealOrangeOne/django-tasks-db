@@ -18,6 +18,8 @@ from django_tasks.utils import normalize_json
 from typing_extensions import ParamSpec
 
 if TYPE_CHECKING:
+    from django.db.models.query import QuerySet
+
     from .models import DBTaskResult
 
 T = TypeVar("T")
@@ -40,6 +42,8 @@ class DatabaseBackend(BaseTaskBackend):
 
         super().__init__(alias, params)
 
+        self.database = self.options.get("database", "default")
+
         if id_function := self.options.get("id_function"):
             if callable(id_function):
                 self.id_function = id_function
@@ -48,6 +52,12 @@ class DatabaseBackend(BaseTaskBackend):
         else:
             # Fall back to the default defined on the model
             self.id_function = DBTaskResult._meta.pk.default
+    
+    @property
+    def _base_queryset(self) -> "QuerySet[DBTaskResult]":
+        from .models import DBTaskResult
+
+        return DBTaskResult.objects.using(self.database)
 
     def _get_id(self) -> Any:
         result_id = self.id_function()
@@ -65,9 +75,7 @@ class DatabaseBackend(BaseTaskBackend):
         args: P.args,  # type:ignore[valid-type]
         kwargs: P.kwargs,  # type:ignore[valid-type]
     ) -> "DBTaskResult":
-        from .models import DBTaskResult
-
-        return DBTaskResult.objects.create(
+        return self._base_queryset.create(
             id=self._get_id(),
             args_kwargs=normalize_json({"args": args, "kwargs": kwargs}),
             priority=task.priority,
@@ -83,9 +91,7 @@ class DatabaseBackend(BaseTaskBackend):
         args: P.args,  # type:ignore[valid-type]
         kwargs: P.kwargs,  # type:ignore[valid-type]
     ) -> "DBTaskResult":
-        from .models import DBTaskResult
-
-        return await DBTaskResult.objects.acreate(
+        return await self._base_queryset.acreate(
             id=self._get_id(),
             args_kwargs=normalize_json({"args": args, "kwargs": kwargs}),
             priority=task.priority,
@@ -137,7 +143,7 @@ class DatabaseBackend(BaseTaskBackend):
         from .models import DBTaskResult
 
         try:
-            return DBTaskResult.objects.get(id=result_id).task_result
+            return self._base_queryset.get(id=result_id).task_result
         except (DBTaskResult.DoesNotExist, ValidationError) as e:
             raise TaskResultDoesNotExist(result_id) from e
 
@@ -145,7 +151,8 @@ class DatabaseBackend(BaseTaskBackend):
         from .models import DBTaskResult
 
         try:
-            return (await DBTaskResult.objects.aget(id=result_id)).task_result
+            db_result = await self._base_queryset.aget(id=result_id)
+            return db_result.task_result
         except (DBTaskResult.DoesNotExist, ValidationError) as e:
             raise TaskResultDoesNotExist(result_id) from e
 
