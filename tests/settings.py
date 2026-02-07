@@ -24,8 +24,11 @@ DATABASES = {
     )
 }
 
-if "sqlite" in DATABASES["default"]["ENGINE"]:
-    DATABASES["default"]["TEST"] = {"NAME": os.path.join(BASE_DIR, "db-test.sqlite3")}
+for db in DATABASES.values():
+    if "sqlite" in db["ENGINE"]:
+        db["TEST"] = {
+            "NAME": os.path.join(BASE_DIR, f"db-test-{os.path.basename(db['NAME'])}")
+        }
 
 
 USE_TZ = True

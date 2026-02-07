@@ -68,6 +68,24 @@ TASKS = {
 
 The `id_function` must return a UUID (either `uuid.UUID` or string representation). Additionally, the PostgreSQL-specific [`RandomUUID`](https://docs.djangoproject.com/en/stable/ref/contrib/postgres/functions/#django.contrib.postgres.functions.RandomUUID) or other database expressions are supported on Django 6.0+.
 
+### Specifying a database
+
+By default, tasks are stored in the `default` database. To use a different database, set the `database` option:
+
+```python
+TASKS = {
+    "default": {
+        "BACKEND": "django_tasks.backends.database.DatabaseBackend",
+        "OPTIONS": {
+            "database": "task_queue"
+        }
+    }
+}
+```
+
+This is useful for separating task queue tables from your main application data, or using different databases for different backends.
+
+
 ## Contributing
 
 See [CONTRIBUTING.md](./CONTRIBUTING.md) for information on how to contribute.

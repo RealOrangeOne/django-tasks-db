@@ -38,6 +38,7 @@ class Worker:
         startup_delay: bool,
         max_tasks: int | None,
         worker_id: str,
+        database: str = "default",
     ):
         self.queue_names = queue_names
         self.process_all_queues = "*" in queue_names
@@ -52,6 +53,7 @@ class Worker:
         self._run_tasks = 0
 
         self.worker_id = worker_id
+        self.database = database
 
     def shutdown(self, signum: int, frame: FrameType | None) -> None:
         if not self.running:
@@ -96,13 +98,17 @@ class Worker:
             time.sleep(random.random())  # noqa: S311
 
         while self.running:
-            tasks = DBTaskResult.objects.ready().filter(backend_name=self.backend_name)
+            tasks = (
+                DBTaskResult.objects.using(self.database)
+                .ready()
+                .filter(backend_name=self.backend_name)
+            )
             if not self.process_all_queues:
                 tasks = tasks.filter(queue_name__in=self.queue_names)
 
             # During this transaction, all "ready" tasks are locked. Therefore, it's important
             # it be as efficient as possible.
-            with exclusive_transaction(tasks.db):
+            with exclusive_transaction(self.database):
                 try:
                     task_result = tasks.get_locked()
                 except OperationalError as e:
@@ -325,6 +331,8 @@ class Command(BaseCommand):
                 "Warning: --reload and --batch cannot be specified together. Disabling autoreload."
             )
             reload = False
+        
+        backend = task_backends[backend_name]
 
         worker = Worker(
             queue_names=queue_name.split(","),
@@ -334,6 +342,7 @@ class Command(BaseCommand):
             startup_delay=startup_delay,
             max_tasks=max_tasks,
             worker_id=worker_id,
+            database=getattr(backend, "database", "default"),
         )
 
         if reload:
