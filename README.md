@@ -72,4 +72,8 @@ The `id_function` must return a UUID (either `uuid.UUID` or string representatio
 
 See [CONTRIBUTING.md](./CONTRIBUTING.md) for information on how to contribute.
 
+<a href="https://github.com/realorangeone/django-tasks-db/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=realorangeone/django-tasks-db" />
+</a>
+
 Note: Prior to `0.12.0`, this backend was included in [`django-tasks`](https://github.com/RealOrangeOne/django-tasks/). Whilst the commit history was cleaned up, it's still quite messy. Don't look too closely.
