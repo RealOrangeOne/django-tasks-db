@@ -17,7 +17,7 @@ Set up a venv:
 ```sh
 python -m venv .venv
 source .venv/bin/activate
-python -m pip install -e --group dev
+python -m pip install -e . --group dev
 ```
 
 > [!TIP]
