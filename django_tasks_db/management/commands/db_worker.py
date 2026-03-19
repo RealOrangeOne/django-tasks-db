@@ -96,6 +96,9 @@ class Worker:
             time.sleep(random.random())  # noqa: S311
 
         while self.running:
+            # Check for dropped/expired connections right after waking up
+            close_old_connections()
+
             tasks = DBTaskResult.objects.ready().filter(backend_name=self.backend_name)
             if not self.process_all_queues:
                 tasks = tasks.filter(queue_name__in=self.queue_names)
