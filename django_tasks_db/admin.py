@@ -1,10 +1,11 @@
+from datetime import datetime
 from typing import Any
 
 from django.contrib import admin
 from django.http import HttpRequest
 from django.utils.html import format_html
 
-from .models import DBTaskResult
+from .models import DBTaskResult, get_date_max
 
 
 @admin.register(DBTaskResult)
@@ -42,6 +43,7 @@ class DBTaskResultAdmin(admin.ModelAdmin):
     ) -> list[str]:
         fields = [f.name for f in self.model._meta.fields]
         fields[fields.index("traceback")] = "formatted_traceback"
+        fields[fields.index("run_after")] = "display_run_after"
         return fields
 
     def get_fields(
@@ -57,3 +59,9 @@ class DBTaskResultAdmin(admin.ModelAdmin):
             "<pre>{}</pre>",
             obj.traceback,
         )
+
+    @admin.display(description="run after")
+    def display_run_after(self, obj: DBTaskResult) -> datetime | str:
+        if obj.run_after == get_date_max():
+            return self.get_empty_value_display()
+        return obj.run_after  # type: ignore[no-any-return]

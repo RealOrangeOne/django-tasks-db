@@ -19,12 +19,13 @@ from unittest import mock, skipIf
 
 import django
 from django import VERSION
+from django.contrib import admin
 from django.core.exceptions import ImproperlyConfigured, SuspiciousOperation
 from django.core.management import call_command, execute_from_command_line
 from django.db import connection, connections, transaction
 from django.db.models import QuerySet
 from django.db.utils import IntegrityError, OperationalError
-from django.test import SimpleTestCase, TransactionTestCase, override_settings
+from django.test import SimpleTestCase, TestCase, TransactionTestCase, override_settings
 from django.test.testcases import _deferredSkip  # type:ignore[attr-defined]
 from django.utils import timezone
 from django_tasks import (
@@ -38,10 +39,11 @@ from django_tasks.signals import task_enqueued
 from django_tasks.utils import get_random_id
 
 from django_tasks_db import DatabaseBackend, compat
+from django_tasks_db.admin import DBTaskResultAdmin
 from django_tasks_db.management.commands.prune_db_task_results import (
     logger as prune_db_tasks_logger,
 )
-from django_tasks_db.models import DBTaskResult
+from django_tasks_db.models import DBTaskResult, get_date_max
 from django_tasks_db.utils import (
     connection_requires_manual_exclusive_transaction,
     exclusive_transaction,
@@ -1695,3 +1697,34 @@ class CompatTestCase(SimpleTestCase):
             from django.tasks.base import Task as DjangoTask
 
             self.assertIn(DjangoTask, compat.TASK_CLASSES)
+
+
+class AdminTestCase(TestCase):
+    def setUp(self) -> None:
+        self.admin = DBTaskResultAdmin(DBTaskResult, admin.AdminSite)  # type:ignore[arg-type]
+
+    def test_display_run_after_returns_empty_for_date_max_or_none(self) -> None:
+        for run_after_value in [get_date_max(), None]:
+            with self.subTest(run_after_value):
+                db_task_result = DBTaskResult.objects.create(  # type:ignore
+                    args_kwargs={"args": [], "kwargs": {}},
+                    run_after=run_after_value,
+                )
+
+                result = self.admin.display_run_after(db_task_result)
+
+                self.assertEqual(result, self.admin.get_empty_value_display())
+
+    def test_display_run_after_returns_db_value(self) -> None:
+        expected_run_after = timezone.make_aware(
+            datetime(2025, 4, 3),
+            timezone.get_current_timezone(),
+        )
+        db_task_result = DBTaskResult.objects.create(
+            args_kwargs={"args": [], "kwargs": {}},
+            run_after=expected_run_after,
+        )
+
+        result = self.admin.display_run_after(db_task_result)
+
+        self.assertEqual(result, expected_run_after)
