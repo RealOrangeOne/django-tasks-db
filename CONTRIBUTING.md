@@ -43,8 +43,18 @@ just test-sqlite
 just test-dbs
 ```
 
-Due to database worker process' tests, tests cannot run using an in-memory database, which means tests run quite slow locally. If you're not modifying the worker, and want you tests run run quicker, run:
+Due to the database worker process tests, tests cannot run using an in-memory database, which makes them run quite slowly locally. If you’re not modifying the worker and want your tests to run faster, run:
 
 ```sh
 just test-fast
+```
+
+## Opening the PR
+
+Before opening a PR, ensure all tests and linters pass.
+
+To check for linter issues, run:
+
+```sh
+just lint
 ```
