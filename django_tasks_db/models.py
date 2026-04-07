@@ -168,7 +168,7 @@ class DBTaskResult(GenericBase[P, T], models.Model):
             queue_name=self.queue_name,
             run_after=None if self.run_after == get_date_max() else self.run_after,
             backend=self.backend_name,
-        )  # type: ignore
+        )  # type: ignore[return-value]
 
     @property
     def task_result(self) -> "TaskResult[T]":

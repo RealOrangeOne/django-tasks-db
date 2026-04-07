@@ -10,7 +10,7 @@ if VERSION >= (5, 1):
 else:
     constraint = models.CheckConstraint(
         check=models.Q(("priority__range", (-100, 100))), name="priority_range"
-    )
+    )  # type: ignore[call-arg]
 
 
 class Migration(migrations.Migration):
