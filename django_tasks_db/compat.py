@@ -1,7 +1,7 @@
 try:
     from django.tasks.base import Task as DjangoTask
 except ImportError:
-    DjangoTask = None  # type: ignore
+    DjangoTask = None  # type: ignore[misc,assignment]
 
 from django_tasks.base import Task
 

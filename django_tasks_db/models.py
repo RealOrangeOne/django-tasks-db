@@ -151,7 +151,7 @@ class DBTaskResult(GenericBase[P, T], models.Model):
                 CheckConstraint(
                     check=Q(priority__range=(TASK_MIN_PRIORITY, TASK_MAX_PRIORITY)),
                     name="priority_range",
-                )  # type: ignore
+                )  # type: ignore[call-arg]
             ]
 
     @property
