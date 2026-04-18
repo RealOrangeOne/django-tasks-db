@@ -1728,3 +1728,175 @@ class AdminTestCase(TestCase):
         result = self.admin.display_run_after(db_task_result)
 
         self.assertEqual(result, expected_run_after)
+
+
+class DBTaskResultSecondaryRouter:
+    def db_for_read(self, model: type[Any], **hints: Any) -> str | None:
+        if model._meta.app_label == "django_tasks_database":
+            return "secondary"
+        return None
+
+    def db_for_write(self, model: type[Any], **hints: Any) -> str | None:
+        if model._meta.app_label == "django_tasks_database":
+            return "secondary"
+        return None
+
+
+class DBTaskResultSplitRouter:
+    def db_for_read(self, model: type[Any], **hints: Any) -> str | None:
+        if model._meta.app_label == "django_tasks_database":
+            return "default"
+        return None
+
+    def db_for_write(self, model: type[Any], **hints: Any) -> str | None:
+        if model._meta.app_label == "django_tasks_database":
+            return "secondary"
+        return None
+
+
+@override_settings(
+    TASKS={
+        "default": {"BACKEND": "django_tasks_db.DatabaseBackend"},
+        "dummy": {"BACKEND": "django_tasks.backends.dummy.DummyBackend"},
+    },
+    DATABASE_ROUTERS=["tests.tests.DBTaskResultSecondaryRouter"],
+)
+class DatabaseRouterTestCase(TransactionTestCase):
+    databases = {"default", "secondary"}
+
+    def tearDown(self) -> None:
+        logger = logging.getLogger("django_tasks_db")
+        tasks_logger = logging.getLogger("django_tasks")
+
+        # Reset the logger after every run, to ensure the correct `stdout` is used
+        for handler in logger.handlers:
+            logger.removeHandler(handler)
+
+        for handler in tasks_logger.handlers:
+            tasks_logger.removeHandler(handler)
+
+    def test_enqueue_uses_router_database(self) -> None:
+        result = test_tasks.calculate_meaning_of_life.enqueue()
+
+        self.assertTrue(
+            DBTaskResult.objects.using("secondary").filter(id=result.id).exists()
+        )
+        self.assertFalse(
+            DBTaskResult.objects.using("default").filter(id=result.id).exists()
+        )
+
+    def test_get_result_uses_router_database(self) -> None:
+        backend = task_backends["default"]
+
+        db_result = DBTaskResult.objects.using("secondary").create(
+            task_path="tests.tasks.calculate_meaning_of_life",
+            args_kwargs={"args": [], "kwargs": {}},
+            run_after=test_tasks.calculate_meaning_of_life.run_after,  # type: ignore[misc]
+            backend_name="default",
+        )
+
+        retrieved_result = backend.get_result(db_result.id)
+        self.assertEqual(retrieved_result.id, str(db_result.id))
+
+        with self.assertRaises(DBTaskResult.DoesNotExist):
+            DBTaskResult.objects.using("default").get(id=db_result.id)
+
+    def test_worker_uses_router_database(self) -> None:
+        result = test_tasks.calculate_meaning_of_life.enqueue()
+
+        self.assertEqual(DBTaskResult.objects.ready().using("secondary").count(), 1)
+        self.assertEqual(DBTaskResult.objects.ready().using("default").count(), 0)
+
+        call_command(
+            "db_worker",
+            verbosity=0,
+            batch=True,
+            interval=0,
+            startup_delay=False,
+            backend_name="default",
+        )
+
+        result.refresh()
+        self.assertEqual(result.status, TaskResultStatus.SUCCESSFUL)
+
+
+@override_settings(
+    TASKS={"default": {"BACKEND": "django_tasks_db.DatabaseBackend"}},
+    DATABASE_ROUTERS=["tests.tests.DBTaskResultSplitRouter"],
+)
+class DatabaseRouterSplitReadWriteTestCase(TransactionTestCase):
+    databases = {"default", "secondary"}
+
+    def tearDown(self) -> None:
+        logger = logging.getLogger("django_tasks_db")
+        tasks_logger = logging.getLogger("django_tasks")
+
+        # Reset the logger after every run, to ensure the correct `stdout` is used
+        for handler in logger.handlers:
+            logger.removeHandler(handler)
+
+        for handler in tasks_logger.handlers:
+            tasks_logger.removeHandler(handler)
+
+        for handler in prune_db_tasks_logger.handlers:
+            prune_db_tasks_logger.removeHandler(handler)
+
+    def test_worker_uses_write_router_database(self) -> None:
+        result = test_tasks.calculate_meaning_of_life.enqueue()
+
+        self.assertTrue(
+            DBTaskResult.objects.using("secondary").filter(id=result.id).exists()
+        )
+        self.assertEqual(DBTaskResult.objects.using("default").count(), 0)
+
+        call_command(
+            "db_worker",
+            verbosity=0,
+            batch=True,
+            interval=0,
+            startup_delay=False,
+            backend_name="default",
+        )
+
+        db_result = DBTaskResult.objects.using("secondary").get(id=result.id)
+        self.assertEqual(db_result.status, TaskResultStatus.SUCCESSFUL)
+
+    def test_prune_uses_write_router_database(self) -> None:
+        result = test_tasks.noop_task.enqueue()
+
+        DBTaskResult.objects.using("secondary").filter(id=result.id).update(
+            status=TaskResultStatus.SUCCESSFUL,
+            finished_at=timezone.now(),
+        )
+        self.assertEqual(
+            DBTaskResult.objects.using("secondary").finished().count(),
+            1,
+        )
+
+        call_command(
+            "prune_db_task_results",
+            verbosity=0,
+            min_age_days=0,
+        )
+
+        self.assertEqual(DBTaskResult.objects.using("secondary").count(), 0)
+
+    def test_prune_dry_run_uses_write_router_database(self) -> None:
+        result = test_tasks.noop_task.enqueue()
+
+        DBTaskResult.objects.using("secondary").filter(id=result.id).update(
+            status=TaskResultStatus.SUCCESSFUL,
+            finished_at=timezone.now(),
+        )
+
+        stdout = StringIO()
+        call_command(
+            "prune_db_task_results",
+            verbosity=3,
+            min_age_days=0,
+            dry_run=True,
+            stdout=stdout,
+        )
+
+        self.assertIn("Would delete 1 task result(s)", stdout.getvalue())
+        self.assertEqual(DBTaskResult.objects.using("secondary").count(), 1)
