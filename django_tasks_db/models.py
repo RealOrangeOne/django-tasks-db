@@ -58,7 +58,7 @@ def get_date_max() -> datetime.datetime:
     )
 
 
-class DBTaskResultQuerySet(models.QuerySet):
+class DBTaskResultQuerySet(models.QuerySet["DBTaskResult"]):
     def ready(self) -> "DBTaskResultQuerySet":
         """
         Return tasks which are ready to be processed.
@@ -151,7 +151,7 @@ class DBTaskResult(GenericBase[P, T], models.Model):
                 CheckConstraint(
                     check=Q(priority__range=(TASK_MIN_PRIORITY, TASK_MAX_PRIORITY)),
                     name="priority_range",
-                )
+                )  # type: ignore[call-arg]
             ]
 
     @property
@@ -163,12 +163,12 @@ class DBTaskResult(GenericBase[P, T], models.Model):
                 f"Task {self.id} does not point to a Task ({self.task_path})"
             )
 
-        return task.using(  # type: ignore[no-any-return]
+        return task.using(
             priority=self.priority,
             queue_name=self.queue_name,
             run_after=None if self.run_after == get_date_max() else self.run_after,
             backend=self.backend_name,
-        )
+        )  # type: ignore[return-value]
 
     @property
     def task_result(self) -> "TaskResult[T]":
