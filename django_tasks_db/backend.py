@@ -36,8 +36,6 @@ class DatabaseBackend(BaseTaskBackend):
     supports_priority = True
 
     def __init__(self, alias: str, params: dict) -> None:
-        from .models import DBTaskResult
-
         super().__init__(alias, params)
 
         if id_function := self.options.get("id_function"):
@@ -46,10 +44,18 @@ class DatabaseBackend(BaseTaskBackend):
             else:
                 self.id_function = import_string(id_function)
         else:
+            self.id_function = None
+
+    def _get_id(self) -> Any:
+        if self.id_function is None:
+            # Defer model import to avoid AppRegistryNotReady when the
+            # backend is instantiated before apps are fully loaded (e.g.
+            # by @task() decorators in third-party packages).
+            from .models import DBTaskResult
+
             # Fall back to the default defined on the model
             self.id_function = DBTaskResult._meta.pk.default
 
-    def _get_id(self) -> Any:
         result_id = self.id_function()
 
         if VERSION < (6, 0) and isinstance(result_id, Expression):
