@@ -68,6 +68,38 @@ TASKS = {
 
 The `id_function` must return a UUID (either `uuid.UUID` or string representation). Additionally, the PostgreSQL-specific [`RandomUUID`](https://docs.djangoproject.com/en/stable/ref/contrib/postgres/functions/#django.contrib.postgres.functions.RandomUUID) or other database expressions are supported on Django 6.0+.
 
+### Using a separate database
+
+Database routing is controlled by Django's standard database router API. If you want
+`django_tasks_db` models to use a separate database, define a router.
+
+> **Note:** In the example below, `"task_queue"` is a placeholder. You should replace it with the specific database **alias** you have configured in your `settings.DATABASES` dictionary.
+
+```python
+class TaskDBRouter:
+    def db_for_read(self, model, **hints):
+        if model._meta.app_label == "django_tasks_database":
+            return "task_queue"
+        return None
+
+    def db_for_write(self, model, **hints):
+        if model._meta.app_label == "django_tasks_database":
+            return "task_queue"
+        return None
+
+    def allow_migrate(self, db, app_label, model_name=None, **hints):
+            if app_label == "django_tasks_database":
+                return db == "task_queue"
+            return None
+```
+
+Then enable it:
+
+```python
+DATABASE_ROUTERS = ["path.to.TaskDBRouter"]
+```
+
+
 ## Contributing
 
 See [CONTRIBUTING.md](./CONTRIBUTING.md) for information on how to contribute.

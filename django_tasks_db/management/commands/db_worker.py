@@ -11,7 +11,7 @@ from types import FrameType
 from django.conf import settings
 from django.core.exceptions import SuspiciousOperation
 from django.core.management.base import BaseCommand
-from django.db import close_old_connections
+from django.db import close_old_connections, router
 from django.db.utils import OperationalError
 from django.utils.autoreload import DJANGO_AUTORELOAD_ENV, run_with_reloader
 from django_tasks import DEFAULT_TASK_BACKEND_ALIAS, task_backends
@@ -105,7 +105,7 @@ class Worker:
 
             # During this transaction, all "ready" tasks are locked. Therefore, it's important
             # it be as efficient as possible.
-            with exclusive_transaction(tasks.db):
+            with exclusive_transaction(router.db_for_write(DBTaskResult)):
                 try:
                     task_result = tasks.get_locked()
                 except OperationalError as e:

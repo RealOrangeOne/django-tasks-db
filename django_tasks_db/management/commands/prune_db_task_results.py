@@ -3,6 +3,7 @@ from argparse import ArgumentParser, ArgumentTypeError
 from datetime import timedelta
 
 from django.core.management.base import BaseCommand
+from django.db import router
 from django.db.models import Q
 from django.utils import timezone
 from django_tasks import (
@@ -108,7 +109,11 @@ class Command(BaseCommand):
             else None
         )
 
-        results = DBTaskResult.objects.finished().filter(backend_name=backend.alias)
+        results = (
+            DBTaskResult.objects.using(router.db_for_write(DBTaskResult))
+            .finished()
+            .filter(backend_name=backend.alias)
+        )
 
         queue_names = queue_name.split(",")
         if "*" not in queue_names:
