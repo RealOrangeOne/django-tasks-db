@@ -1699,6 +1699,64 @@ class CompatTestCase(SimpleTestCase):
             self.assertIn(DjangoTask, compat.TASK_CLASSES)
 
 
+class DBTaskResultOrderingTestCase(TestCase):
+    def _create_task(
+        self,
+        priority: int = 0,
+        run_after: "datetime | None" = None,
+        enqueued_at: "datetime | None" = None,
+    ) -> DBTaskResult:
+        if run_after is None:
+            run_after = timezone.now()
+        task = DBTaskResult.objects.create(
+            args_kwargs={"args": [], "kwargs": {}},
+            run_after=run_after,
+            priority=priority,
+            enqueued_at=enqueued_at or timezone.now(),
+        )
+        return task
+
+    def test_higher_priority_tasks_come_first(self) -> None:
+        now = timezone.now()
+        low = self._create_task(priority=-1, run_after=now)
+        normal = self._create_task(priority=0, run_after=now)
+        high = self._create_task(priority=1, run_after=now)
+
+        self.assertEqual(
+            list(DBTaskResult.objects.values_list("id", flat=True)),
+            [high.id, normal.id, low.id],
+        )
+
+    def test_earlier_run_after_comes_first_given_same_priority(self) -> None:
+        now = timezone.now()
+        early = self._create_task(run_after=now - timedelta(hours=1))
+        late = self._create_task(run_after=now + timedelta(hours=1))
+        on_time = self._create_task(run_after=now)
+
+        self.assertEqual(
+            list(DBTaskResult.objects.values_list("id", flat=True)),
+            [early.id, on_time.id, late.id],
+        )
+
+    def test_earlier_enqueued_at_comes_first_given_same_priority_and_run_after(
+        self,
+    ) -> None:
+        now = timezone.now()
+        run_after = now + timedelta(hours=1)
+        first = self._create_task(
+            run_after=run_after, enqueued_at=now - timedelta(minutes=5)
+        )
+        second = self._create_task(run_after=run_after, enqueued_at=now)
+        third = self._create_task(
+            run_after=run_after, enqueued_at=now + timedelta(minutes=5)
+        )
+
+        self.assertEqual(
+            list(DBTaskResult.objects.values_list("id", flat=True)),
+            [first.id, second.id, third.id],
+        )
+
+
 class AdminTestCase(TestCase):
     def setUp(self) -> None:
         self.admin = DBTaskResultAdmin(DBTaskResult, admin.AdminSite)  # type:ignore[arg-type]
