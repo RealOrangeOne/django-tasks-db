@@ -1411,6 +1411,31 @@ class DatabaseBackendPruneTaskResultsTestCase(TransactionTestCase):
         with self.assertRaises(TaskResultDoesNotExist):
             failed_result.refresh()
 
+    def test_failed_min_age_zero(self) -> None:
+        successful_result = test_tasks.noop_task.enqueue()
+        DBTaskResult.objects.ready().update(
+            status=TaskResultStatus.SUCCESSFUL,
+            finished_at=timezone.now() - timedelta(days=1),
+        )
+
+        failed_result = test_tasks.noop_task.enqueue()
+        DBTaskResult.objects.ready().update(
+            status=TaskResultStatus.FAILED,
+            finished_at=timezone.now() - timedelta(days=1),
+        )
+
+        self.assertEqual(DBTaskResult.objects.finished().count(), 2)
+
+        with self.assertNumQueries(3):
+            self.prune_task_results(min_age_days=14, failed_min_age_days=0)
+
+        self.assertEqual(DBTaskResult.objects.finished().count(), 1)
+
+        successful_result.refresh()
+
+        with self.assertRaises(TaskResultDoesNotExist):
+            failed_result.refresh()
+
     def test_dry_run(self) -> None:
         test_tasks.noop_task.enqueue()
 

@@ -104,7 +104,7 @@ class Command(BaseCommand):
         min_age = timezone.now() - timedelta(days=min_age_days)
         failed_min_age = (
             (timezone.now() - timedelta(days=failed_min_age_days))
-            if failed_min_age_days
+            if failed_min_age_days is not None
             else None
         )
 
