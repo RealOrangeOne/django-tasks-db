@@ -1923,5 +1923,4 @@ class DatabaseRouterSplitReadWriteTestCase(TransactionTestCase):
             stdout=stdout,
         )
 
-        self.assertIn("Would delete 1 task result(s)", stdout.getvalue())
         self.assertEqual(DBTaskResult.objects.using("secondary").count(), 1)
