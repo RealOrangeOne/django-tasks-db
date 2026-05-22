@@ -28,15 +28,36 @@ from django.db.utils import IntegrityError, OperationalError
 from django.test import SimpleTestCase, TestCase, TransactionTestCase, override_settings
 from django.test.testcases import _deferredSkip  # type:ignore[attr-defined]
 from django.utils import timezone
-from django_tasks import (
-    TaskResultStatus,
-    default_task_backend,
-    task_backends,
-)
-from django_tasks.base import Task
-from django_tasks.exceptions import InvalidTaskError, TaskResultDoesNotExist
-from django_tasks.signals import task_enqueued
-from django_tasks.utils import get_random_id
+from django.utils.crypto import get_random_string
+
+try:
+    from django.tasks import (
+        TaskResultStatus,
+        default_task_backend,
+        task_backends,
+    )
+    from django.tasks.base import Task
+    from django.tasks.exceptions import InvalidTask, TaskResultDoesNotExist
+    from django.tasks.signals import task_enqueued
+
+    DUMMY_BACKEND = "django.tasks.backends.dummy.DummyBackend"
+    LOGGER = "django.tasks"
+except ImportError:
+    from django_tasks import (  # type: ignore[no-redef]
+        TaskResultStatus,
+        default_task_backend,
+        task_backends,
+    )
+    from django_tasks.base import Task  # type: ignore[no-redef]
+    from django_tasks.exceptions import (
+        InvalidTaskError as InvalidTask,  # type: ignore[no-redef]
+    )
+    from django_tasks.exceptions import TaskResultDoesNotExist  # type: ignore[no-redef]
+    from django_tasks.signals import task_enqueued  # type: ignore[no-redef]
+
+    DUMMY_BACKEND = "django_tasks.backends.dummy.DummyBackend"
+    LOGGER = "django_tasks"
+
 
 from django_tasks_db import DatabaseBackend, compat
 from django_tasks_db.admin import DBTaskResultAdmin
@@ -166,7 +187,7 @@ class DatabaseBackendTestCase(TransactionTestCase):
             started_at=timezone.now(),
             finished_at=timezone.now(),
             return_value=42,
-            worker_ids=[get_random_id()],
+            worker_ids=[get_random_string(32)],
         )
 
         self.assertEqual(result.status, TaskResultStatus.READY)
@@ -197,7 +218,7 @@ class DatabaseBackendTestCase(TransactionTestCase):
             started_at=timezone.now(),
             finished_at=timezone.now(),
             return_value=42,
-            worker_ids=[get_random_id()],
+            worker_ids=[get_random_string(32)],
         )
 
         self.assertEqual(result.status, TaskResultStatus.READY)
@@ -335,7 +356,7 @@ class DatabaseBackendTestCase(TransactionTestCase):
             self.assertEqual(self.get_task_count_in_new_connection(), 1)
 
     def test_enqueue_logs(self) -> None:
-        with self.assertLogs("django_tasks", level="DEBUG") as captured_logs:
+        with self.assertLogs(LOGGER, level="DEBUG") as captured_logs:
             result = test_tasks.noop_task.enqueue()
 
         self.assertEqual(len(captured_logs.output), 1)
@@ -421,7 +442,7 @@ class DatabaseBackendTestCase(TransactionTestCase):
             )
 
         with self.assertRaisesMessage(
-            InvalidTaskError, "Queue 'unknown_queue' is not valid for backend"
+            InvalidTask, "Queue 'unknown_queue' is not valid for backend"
         ):
             task_with_custom_queue_name.enqueue()
 
@@ -439,7 +460,7 @@ class DatabaseBackendTestCase(TransactionTestCase):
             )
 
         with self.assertRaisesMessage(
-            InvalidTaskError, "Queue 'unknown_queue' is not valid for backend"
+            InvalidTask, "Queue 'unknown_queue' is not valid for backend"
         ):
             await task_with_custom_queue_name.aenqueue()
 
@@ -511,11 +532,11 @@ class DatabaseBackendTestCase(TransactionTestCase):
             "BACKEND": "django_tasks_db.DatabaseBackend",
             "QUEUES": ["default", "queue-1"],
         },
-        "dummy": {"BACKEND": "django_tasks.backends.dummy.DummyBackend"},
+        "dummy": {"BACKEND": DUMMY_BACKEND},
     }
 )
 class DatabaseBackendWorkerTestCase(TransactionTestCase):
-    worker_id = get_random_id()
+    worker_id = get_random_string(32)
 
     run_worker = staticmethod(
         partial(
@@ -531,7 +552,7 @@ class DatabaseBackendWorkerTestCase(TransactionTestCase):
 
     def tearDown(self) -> None:
         logger = logging.getLogger("django_tasks_db")
-        tasks_logger = logging.getLogger("django_tasks")
+        tasks_logger = logging.getLogger(LOGGER)
 
         # Reset the logger after every run, to ensure the correct `stdout` is used
         for handler in logger.handlers:
@@ -1240,7 +1261,7 @@ class ConnectionExclusiveTranscationTestCase(TransactionTestCase):
             "BACKEND": "django_tasks_db.DatabaseBackend",
             "QUEUES": ["default", "queue-1"],
         },
-        "dummy": {"BACKEND": "django_tasks.backends.dummy.DummyBackend"},
+        "dummy": {"BACKEND": DUMMY_BACKEND},
     }
 )
 class DatabaseBackendPruneTaskResultsTestCase(TransactionTestCase):
@@ -1518,7 +1539,7 @@ class DatabaseWorkerProcessTestCase(TransactionTestCase):
             args = []
 
         if worker_id is None:
-            worker_id = get_random_id()
+            worker_id = get_random_string(32)
 
         p = subprocess.Popen(
             [
@@ -1606,7 +1627,7 @@ class DatabaseWorkerProcessTestCase(TransactionTestCase):
         result = test_tasks.hang.enqueue()
         self.assertEqual(DBTaskResult.objects.get(id=result.id).worker_ids, [])
 
-        worker_id = get_random_id()
+        worker_id = get_random_string(32)
 
         process = self.start_worker(worker_id=worker_id)
 
