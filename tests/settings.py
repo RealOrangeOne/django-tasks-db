@@ -32,11 +32,15 @@ DEFAULT_AUTO_FIELD = "django.db.models.AutoField"
 DATABASES = {
     "default": dj_database_url.config(
         default="sqlite:///" + os.path.join(BASE_DIR, "db.sqlite3")
-    )
+    ),
+    "secondary": dj_database_url.parse(
+        "sqlite:///" + os.path.join(BASE_DIR, "db-secondary.sqlite3")
+    ),
 }
 
-if "sqlite" in DATABASES["default"]["ENGINE"]:
-    DATABASES["default"]["TEST"] = {"NAME": os.path.join(BASE_DIR, "db-test.sqlite3")}
+for alias, db in DATABASES.items():
+    if "sqlite" in db["ENGINE"]:
+        db["TEST"] = {"NAME": os.path.join(BASE_DIR, f"db-test-{alias}.sqlite3")}
 
 
 USE_TZ = True
