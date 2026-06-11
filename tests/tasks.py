@@ -1,7 +1,10 @@
 import time
 from typing import Any
 
-from django_tasks import TaskContext, task
+try:
+    from django.tasks import TaskContext, task
+except ImportError:
+    from django_tasks import TaskContext, task  # type:ignore[no-redef]
 
 
 @task()

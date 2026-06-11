@@ -1,6 +1,7 @@
 import datetime
 import logging
 import uuid
+from traceback import format_exception
 from typing import TYPE_CHECKING, Any, Generic, Optional, TypeVar
 
 import django
@@ -12,20 +13,29 @@ from django.db.models.constraints import CheckConstraint
 from django.utils import timezone
 from django.utils.module_loading import import_string
 from django.utils.translation import gettext_lazy as _
-from django_tasks.base import (
-    DEFAULT_TASK_PRIORITY,
-    DEFAULT_TASK_QUEUE_NAME,
-    TASK_MAX_PRIORITY,
-    TASK_MIN_PRIORITY,
-    Task,
-    TaskError,
-    TaskResultStatus,
-)
-from django_tasks.utils import (
-    get_exception_traceback,
-    get_module_path,
-)
 from typing_extensions import ParamSpec
+
+try:
+    from django.tasks.base import (
+        DEFAULT_TASK_PRIORITY,
+        DEFAULT_TASK_QUEUE_NAME,
+        TASK_MAX_PRIORITY,
+        TASK_MIN_PRIORITY,
+        Task,
+        TaskError,
+        TaskResultStatus,
+    )
+except ImportError:
+    from django_tasks.base import (  # type: ignore[no-redef]
+        DEFAULT_TASK_PRIORITY,
+        DEFAULT_TASK_QUEUE_NAME,
+        TASK_MAX_PRIORITY,
+        TASK_MIN_PRIORITY,
+        Task,
+        TaskError,
+        TaskResultStatus,
+    )
+
 
 from .compat import TASK_CLASSES
 from .utils import normalize_uuid, retry
@@ -168,7 +178,7 @@ class DBTaskResult(GenericBase[P, T], models.Model):
             queue_name=self.queue_name,
             run_after=None if self.run_after == get_date_max() else self.run_after,
             backend=self.backend_name,
-        )  # type: ignore[return-value]
+        )
 
     @property
     def task_result(self) -> "TaskResult[T]":
@@ -248,8 +258,8 @@ class DBTaskResult(GenericBase[P, T], models.Model):
     def set_failed(self, exc: BaseException) -> None:
         self.status = TaskResultStatus.FAILED
         self.finished_at = timezone.now()
-        self.exception_class_path = get_module_path(type(exc))
-        self.traceback = get_exception_traceback(exc)
+        self.exception_class_path = f"{type(exc).__module__}.{type(exc).__qualname__}"
+        self.traceback = "".join(format_exception(exc))
         self.return_value = None
 
         self.save(

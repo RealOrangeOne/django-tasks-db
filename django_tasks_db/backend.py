@@ -9,13 +9,23 @@ from django.core.exceptions import ImproperlyConfigured, ValidationError
 from django.db.models import Expression
 from django.utils.module_loading import import_string
 from django.utils.version import PY311
-from django_tasks.backends.base import BaseTaskBackend
-from django_tasks.base import Task
-from django_tasks.base import TaskResult as BaseTaskResult
-from django_tasks.exceptions import TaskResultDoesNotExist
-from django_tasks.signals import task_enqueued
-from django_tasks.utils import normalize_json
 from typing_extensions import ParamSpec
+
+try:
+    from django.tasks.backends.base import BaseTaskBackend
+    from django.tasks.base import Task
+    from django.tasks.base import TaskResult as BaseTaskResult
+    from django.tasks.exceptions import TaskResultDoesNotExist
+    from django.tasks.signals import task_enqueued
+    from django.utils.json import normalize_json
+except ImportError:
+    from django_tasks.backends.base import BaseTaskBackend  # type: ignore[no-redef]
+    from django_tasks.base import Task  # type: ignore[no-redef]
+    from django_tasks.base import TaskResult as BaseTaskResult  # type: ignore[no-redef]
+    from django_tasks.exceptions import TaskResultDoesNotExist  # type: ignore[no-redef]
+    from django_tasks.signals import task_enqueued  # type: ignore[no-redef]
+    from django_tasks.utils import normalize_json  # type: ignore[no-redef]
+
 
 if TYPE_CHECKING:
     from .models import DBTaskResult
@@ -25,7 +35,7 @@ P = ParamSpec("P")
 
 
 @dataclass(frozen=True, slots=PY311, kw_only=True)  # type: ignore[literal-required]
-class TaskResult(BaseTaskResult[T]):
+class TaskResult(BaseTaskResult[P, T]):  # type: ignore[misc]
     db_result: "DBTaskResult"
 
 

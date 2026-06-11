@@ -43,6 +43,9 @@ jobs:
           pip install --upgrade pip
           pip install -e . --group dev
           pip install Django~=${{ matrix.django-version }}
+      - name: Install django-tasks
+        run: pip install django-tasks
+        if: matrix.django-version != '6.0'
       - name: Lint
         run: just lint
       - name: Run fast tests
