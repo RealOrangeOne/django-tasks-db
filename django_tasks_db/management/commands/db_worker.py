@@ -10,7 +10,7 @@ from types import FrameType
 
 from django.conf import settings
 from django.core.exceptions import SuspiciousOperation
-from django.core.management.base import BaseCommand
+from django.core.management.base import BaseCommand, CommandError
 from django.db import close_old_connections
 from django.db.utils import OperationalError
 from django.utils.autoreload import DJANGO_AUTORELOAD_ENV, run_with_reloader
@@ -38,9 +38,11 @@ class Worker:
         startup_delay: bool,
         max_tasks: int | None,
         worker_id: str,
+        excluded_queue_names: list[str],
     ):
         self.queue_names = queue_names
         self.process_all_queues = "*" in queue_names
+        self.excluded_queue_names = excluded_queue_names
         self.interval = interval
         self.batch = batch
         self.backend_name = backend_name
@@ -102,6 +104,8 @@ class Worker:
             tasks = DBTaskResult.objects.ready().filter(backend_name=self.backend_name)
             if not self.process_all_queues:
                 tasks = tasks.filter(queue_name__in=self.queue_names)
+            if self.excluded_queue_names:
+                tasks = tasks.exclude(queue_name__in=self.excluded_queue_names)
 
             # During this transaction, all "ready" tasks are locked. Therefore, it's important
             # it be as efficient as possible.
@@ -240,6 +244,13 @@ class Command(BaseCommand):
             help="The queues to process. Separate multiple with a comma. To process all queues, use '*' (default: %(default)r)",
         )
         parser.add_argument(
+            "--exclude-queues",
+            nargs="?",
+            default="",
+            type=str,
+            help="Queues to exclude. Separate multiple with a comma.",
+        )
+        parser.add_argument(
             "--interval",
             nargs="?",
             default=1,
@@ -319,6 +330,7 @@ class Command(BaseCommand):
         reload: bool,
         max_tasks: int | None,
         worker_id: str,
+        exclude_queues: str,
         **options: dict,
     ) -> None:
         self.configure_logging(verbosity)
@@ -329,14 +341,21 @@ class Command(BaseCommand):
             )
             reload = False
 
+        queue_names = queue_name.split(",")
+        excluded_queue_names = exclude_queues.split(",") if exclude_queues else []
+
+        if excluded_queue_names and "*" not in queue_names:
+            raise CommandError("--exclude-queues can only be used with --queue-name=*")
+
         worker = Worker(
-            queue_names=queue_name.split(","),
+            queue_names=queue_names,
             interval=interval,
             batch=batch,
             backend_name=backend_name,
             startup_delay=startup_delay,
             max_tasks=max_tasks,
             worker_id=worker_id,
+            excluded_queue_names=excluded_queue_names,
         )
 
         if reload:

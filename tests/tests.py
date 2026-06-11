@@ -21,7 +21,7 @@ import django
 from django import VERSION
 from django.contrib import admin
 from django.core.exceptions import ImproperlyConfigured, SuspiciousOperation
-from django.core.management import call_command, execute_from_command_line
+from django.core.management import CommandError, call_command, execute_from_command_line
 from django.db import connection, connections, transaction
 from django.db.models import QuerySet
 from django.db.utils import IntegrityError, OperationalError
@@ -614,6 +614,43 @@ class DatabaseBackendWorkerTestCase(TransactionTestCase):
             self.run_worker(queue_name="*")
 
         self.assertEqual(DBTaskResult.objects.ready().count(), 0)
+
+    def test_process_all_queues_excluding_one_queue(self) -> None:
+        test_tasks.noop_task.enqueue()
+        excluded_result = test_tasks.noop_task.using(queue_name="queue-1").enqueue()
+
+        self.assertEqual(DBTaskResult.objects.ready().count(), 2)
+
+        self.run_worker(queue_name="*", exclude_queues="queue-1")
+
+        excluded_result.refresh()
+        self.assertEqual(excluded_result.status, TaskResultStatus.READY)
+        self.assertEqual(DBTaskResult.objects.ready().count(), 1)
+        self.assertEqual(DBTaskResult.objects.successful().count(), 1)
+
+    def test_exclude_queues_requires_processing_all_queues(self) -> None:
+        test_tasks.noop_task.enqueue()
+        test_tasks.noop_task.using(queue_name="queue-1").enqueue()
+
+        self.assertEqual(DBTaskResult.objects.ready().count(), 2)
+
+        with self.assertRaisesMessage(
+            CommandError, "--exclude-queues can only be used with --queue-name=*"
+        ):
+            self.run_worker(queue_name="default,queue-1", exclude_queues="queue-1")
+
+        self.assertEqual(DBTaskResult.objects.ready().count(), 2)
+        self.assertEqual(DBTaskResult.objects.successful().count(), 0)
+
+    def test_excluding_unknown_queue_processes_selected_queues(self) -> None:
+        test_tasks.noop_task.using(queue_name="queue-1").enqueue()
+
+        self.assertEqual(DBTaskResult.objects.ready().count(), 1)
+
+        self.run_worker(queue_name="*", exclude_queues="missing")
+
+        self.assertEqual(DBTaskResult.objects.ready().count(), 0)
+        self.assertEqual(DBTaskResult.objects.successful().count(), 1)
 
     def test_failing_task(self) -> None:
         result = test_tasks.failing_task_value_error.enqueue()
