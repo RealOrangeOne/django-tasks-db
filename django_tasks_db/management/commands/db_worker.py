@@ -213,13 +213,13 @@ def valid_interval(val: str) -> float:
     if not math.isfinite(num):
         raise ArgumentTypeError("Must be a finite floating point value")
     if num < 0:
-        raise ArgumentTypeError("Must be greater than zero")
+        raise ArgumentTypeError("Must be zero or greater")
     return num
 
 
 def valid_max_tasks(val: str) -> int:
     num = int(val)
-    if num < 0:
+    if num <= 0:
         raise ArgumentTypeError("Must be greater than zero")
     return num
 
