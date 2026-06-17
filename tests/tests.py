@@ -765,7 +765,7 @@ class DatabaseBackendWorkerTestCase(TransactionTestCase):
                 execute_from_command_line(
                     ["django-admin", "db_worker", "--interval", "-1"]
                 )
-        self.assertIn("Must be greater than zero", output.getvalue())
+        self.assertIn("Must be zero or greater", output.getvalue())
 
     def test_infinite_interval(self) -> None:
         output = StringIO()
@@ -786,12 +786,29 @@ class DatabaseBackendWorkerTestCase(TransactionTestCase):
 
         self.assertEqual(worker_class.mock_calls[0].kwargs["interval"], 0.1)
 
+    def test_zero_interval(self) -> None:
+        with mock.patch(
+            "django_tasks_db.management.commands.db_worker.Worker"
+        ) as worker_class:
+            execute_from_command_line(["django-admin", "db_worker", "--interval", "0"])
+
+        self.assertEqual(worker_class.mock_calls[0].kwargs["interval"], 0)
+
     def test_negative_max_tasks(self) -> None:
         output = StringIO()
         with redirect_stderr(output):
             with self.assertRaises(SystemExit):
                 execute_from_command_line(
                     ["django-admin", "db_worker", "--max-tasks", "-1"]
+                )
+        self.assertIn("Must be greater than zero", output.getvalue())
+
+    def test_zero_max_tasks(self) -> None:
+        output = StringIO()
+        with redirect_stderr(output):
+            with self.assertRaises(SystemExit):
+                execute_from_command_line(
+                    ["django-admin", "db_worker", "--max-tasks", "0"]
                 )
         self.assertIn("Must be greater than zero", output.getvalue())
 
