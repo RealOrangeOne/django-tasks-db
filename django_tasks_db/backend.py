@@ -1,4 +1,3 @@
-from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, TypeVar
 
@@ -9,13 +8,16 @@ from django.core.exceptions import ImproperlyConfigured, ValidationError
 from django.db.models import Expression
 from django.utils.module_loading import import_string
 from django.utils.version import PY311
-from django_tasks.backends.base import BaseTaskBackend
-from django_tasks.base import Task
-from django_tasks.base import TaskResult as BaseTaskResult
-from django_tasks.exceptions import TaskResultDoesNotExist
-from django_tasks.signals import task_enqueued
-from django_tasks.utils import normalize_json
 from typing_extensions import ParamSpec
+
+from .compat import (
+    BaseTaskBackend,
+    BaseTaskResult,
+    Task,
+    TaskResultDoesNotExist,
+    normalize_json,
+    task_enqueued,
+)
 
 if TYPE_CHECKING:
     from .models import DBTaskResult
@@ -25,7 +27,7 @@ P = ParamSpec("P")
 
 
 @dataclass(frozen=True, slots=PY311, kw_only=True)  # type: ignore[literal-required]
-class TaskResult(BaseTaskResult[T]):
+class TaskResult(BaseTaskResult[P, T]):  # type: ignore[misc]
     db_result: "DBTaskResult"
 
 
@@ -106,7 +108,7 @@ class DatabaseBackend(BaseTaskBackend):
         task: Task[P, T],
         args: P.args,  # type:ignore[valid-type]
         kwargs: P.kwargs,  # type:ignore[valid-type]
-    ) -> TaskResult[T]:
+    ) -> TaskResult[P, T]:
         self.validate_task(task)
 
         db_result = self._task_to_db_task(task, args, kwargs)
@@ -130,7 +132,7 @@ class DatabaseBackend(BaseTaskBackend):
         task: Task[P, T],
         args: P.args,  # type:ignore[valid-type]
         kwargs: P.kwargs,  #  type:ignore[valid-type]
-    ) -> TaskResult[T]:
+    ) -> TaskResult[P, T]:
         self.validate_task(task)
 
         db_result = await self._atask_to_db_task(task, args, kwargs)
@@ -155,13 +157,14 @@ class DatabaseBackend(BaseTaskBackend):
         except (DBTaskResult.DoesNotExist, ValidationError) as e:
             raise TaskResultDoesNotExist(result_id) from e
 
-    def check(self, **kwargs: Any) -> Iterable[checks.CheckMessage]:
-        yield from super().check(**kwargs)
-
-        backend_name = self.__class__.__name__
-
-        if not apps.is_installed("django_tasks_db"):
-            yield checks.Error(
-                f"{backend_name} configured as django_tasks_db backend, but database app not installed",
-                "Insert 'django_tasks_db' in INSTALLED_APPS",
-            )
+    def check(self, **kwargs: Any) -> list[checks.CheckMessage]:
+        if apps.is_installed("django_tasks_db"):
+            return super().check(**kwargs)
+        else:
+            backend_name = self.__class__.__name__
+            return [
+                checks.Error(
+                    f"{backend_name} configured as django_tasks_db backend, but database app not installed",
+                    "Insert 'django_tasks_db' in INSTALLED_APPS",
+                ),
+            ]

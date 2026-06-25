@@ -14,13 +14,19 @@ from django.core.management.base import BaseCommand, CommandError
 from django.db import close_old_connections
 from django.db.utils import OperationalError
 from django.utils.autoreload import DJANGO_AUTORELOAD_ENV, run_with_reloader
-from django_tasks import DEFAULT_TASK_BACKEND_ALIAS, task_backends
-from django_tasks.base import DEFAULT_TASK_QUEUE_NAME, TaskContext
-from django_tasks.exceptions import InvalidTaskBackendError
-from django_tasks.signals import task_finished, task_started
-from django_tasks.utils import get_random_id
+from django.utils.crypto import get_random_string
 
 from django_tasks_db.backend import DatabaseBackend
+from django_tasks_db.compat import (
+    DEFAULT_TASK_BACKEND_ALIAS,
+    DEFAULT_TASK_QUEUE_NAME,
+    TASKS_LOGGER,
+    InvalidTaskBackend,
+    TaskContext,
+    task_backends,
+    task_finished,
+    task_started,
+)
 from django_tasks_db.models import DBTaskResult
 from django_tasks_db.utils import exclusive_transaction
 
@@ -201,7 +207,7 @@ class Worker:
 def valid_backend_name(val: str) -> str:
     try:
         backend = task_backends[val]
-    except InvalidTaskBackendError as e:
+    except InvalidTaskBackend as e:
         raise ArgumentTypeError(e.args[0]) from e
     if not isinstance(backend, DatabaseBackend):
         raise ArgumentTypeError(f"Backend '{val}' is not a database backend")
@@ -294,11 +300,11 @@ class Command(BaseCommand):
             nargs="?",
             type=validate_worker_id,
             help="Worker id. MUST be unique across worker pool (default: auto-generate)",
-            default=get_random_id(),
+            default=get_random_string(32),
         )
 
     def configure_logging(self, verbosity: int) -> None:
-        tasks_logger = logging.getLogger("django_tasks")
+        tasks_logger = logging.getLogger(TASKS_LOGGER)
 
         if verbosity == 0:
             tasks_logger.setLevel(logging.CRITICAL)

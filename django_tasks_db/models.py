@@ -1,6 +1,7 @@
 import datetime
 import logging
 import uuid
+from traceback import format_exception
 from typing import TYPE_CHECKING, Any, Generic, Optional, TypeVar
 
 import django
@@ -12,7 +13,9 @@ from django.db.models.constraints import CheckConstraint
 from django.utils import timezone
 from django.utils.module_loading import import_string
 from django.utils.translation import gettext_lazy as _
-from django_tasks.base import (
+from typing_extensions import ParamSpec
+
+from .compat import (
     DEFAULT_TASK_PRIORITY,
     DEFAULT_TASK_QUEUE_NAME,
     TASK_MAX_PRIORITY,
@@ -21,13 +24,6 @@ from django_tasks.base import (
     TaskError,
     TaskResultStatus,
 )
-from django_tasks.utils import (
-    get_exception_traceback,
-    get_module_path,
-)
-from typing_extensions import ParamSpec
-
-from .compat import TASK_CLASSES
 from .utils import normalize_uuid, retry
 
 logger = logging.getLogger("django_tasks_db")
@@ -40,7 +36,6 @@ if TYPE_CHECKING:
 
     class GenericBase(Generic[P, T]):
         pass
-
 else:
 
     class GenericBase:
@@ -158,7 +153,7 @@ class DBTaskResult(GenericBase[P, T], models.Model):
     def task(self) -> Task[P, T]:
         task = import_string(self.task_path)
 
-        if not isinstance(task, TASK_CLASSES):
+        if not isinstance(task, Task):
             raise SuspiciousOperation(
                 f"Task {self.id} does not point to a Task ({self.task_path})"
             )
@@ -168,13 +163,13 @@ class DBTaskResult(GenericBase[P, T], models.Model):
             queue_name=self.queue_name,
             run_after=None if self.run_after == get_date_max() else self.run_after,
             backend=self.backend_name,
-        )  # type: ignore[return-value]
+        )
 
     @property
-    def task_result(self) -> "TaskResult[T]":
+    def task_result(self) -> "TaskResult[P, T]":
         from .backend import TaskResult
 
-        task_result: TaskResult[T] = TaskResult(
+        task_result = TaskResult(
             db_result=self,
             task=self.task,
             id=normalize_uuid(self.id),
@@ -248,8 +243,8 @@ class DBTaskResult(GenericBase[P, T], models.Model):
     def set_failed(self, exc: BaseException) -> None:
         self.status = TaskResultStatus.FAILED
         self.finished_at = timezone.now()
-        self.exception_class_path = get_module_path(type(exc))
-        self.traceback = get_exception_traceback(exc)
+        self.exception_class_path = f"{type(exc).__module__}.{type(exc).__qualname__}"
+        self.traceback = "".join(format_exception(exc))
         self.return_value = None
 
         self.save(

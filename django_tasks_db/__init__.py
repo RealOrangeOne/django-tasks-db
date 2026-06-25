@@ -9,4 +9,7 @@ __version__ = importlib.metadata.version(__name__)
 
 from .backend import DatabaseBackend
 
-__all__ = ["DatabaseBackend"]
+__all__ = [
+    "DatabaseBackend",
+    "__version__",
+]

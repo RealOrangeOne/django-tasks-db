@@ -41,6 +41,9 @@ jobs:
           pip install --upgrade pip
           pip install -e . --group dev
           pip install Django~=${{ matrix.django-version }}
+      - name: Install compat deps
+        run: pip install -e '.[compat]'
+        if: matrix.django-version != '6.0'
       - name: Lint
         run: just lint
       - name: Run fast tests
@@ -81,6 +84,9 @@ jobs:
           pip install --upgrade pip
           pip install -e . --group dev --group postgres
           pip install Django~=${{ matrix.django-version }}
+      - name: Install compat deps
+        run: pip install -e '.[compat]'
+        if: matrix.django-version != '6.0'
       - name: Run tests
         run: just test -v2
         env:
@@ -116,6 +122,9 @@ jobs:
           pip install --upgrade pip
           pip install -e . --group dev --group mysql
           pip install Django~=${{ matrix.django-version }}
+      - name: Install compat deps
+        run: pip install -e '.[compat]'
+        if: matrix.django-version != '6.0'
       - name: Run tests
         run: just test -v2
         env:
