@@ -5,15 +5,15 @@ from datetime import timedelta
 from django.core.management.base import BaseCommand
 from django.db.models import Q
 from django.utils import timezone
-from django_tasks import (
-    DEFAULT_TASK_BACKEND_ALIAS,
-    DEFAULT_TASK_QUEUE_NAME,
-    task_backends,
-)
-from django_tasks.base import TaskResultStatus
-from django_tasks.exceptions import InvalidTaskBackendError
 
 from django_tasks_db.backend import DatabaseBackend
+from django_tasks_db.compat import (
+    DEFAULT_TASK_BACKEND_ALIAS,
+    DEFAULT_TASK_QUEUE_NAME,
+    InvalidTaskBackend,
+    TaskResultStatus,
+    task_backends,
+)
 from django_tasks_db.models import DBTaskResult
 
 logger = logging.getLogger("django_tasks_db.prune_db_task_results")
@@ -22,7 +22,7 @@ logger = logging.getLogger("django_tasks_db.prune_db_task_results")
 def valid_backend_name(val: str) -> DatabaseBackend:
     try:
         backend = task_backends[val]
-    except InvalidTaskBackendError as e:
+    except InvalidTaskBackend as e:
         raise ArgumentTypeError(e.args[0]) from e
     if not isinstance(backend, DatabaseBackend):
         raise ArgumentTypeError(f"Backend '{val}' is not a database backend")

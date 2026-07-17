@@ -36,10 +36,14 @@ classifiers = [
 ]
 requires-python = ">=3.10"
 dependencies = [
-    "Django>=5.2",
+    "django>=5.2",
     "typing_extensions",
     "django-stubs-ext",
-    "django-tasks>=0.12.0"
+]
+[project.optional-dependencies]
+compat = [
+    "django>=5.2,<6.0",
+    "django-tasks>=0.12.0",
 ]
 
 [project.urls]
