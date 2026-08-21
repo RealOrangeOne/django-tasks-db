@@ -388,8 +388,12 @@ class DatabaseBackendTestCase(TransactionTestCase):
         elif connection.vendor == "sqlite":
             self.assertIn("USING INDEX tasks_db_new_ordering_idx", plan)
         elif connection.vendor == "mysql":
-            self.assertIn("Index lookup", plan)
-            self.assertIn("using tasks_db_new_ordering_idx", plan)
+            if getattr(connection, "mysql_is_mariadb", False):
+                # MariaDB may discover the index, but the query planner choose not to use it
+                self.assertIn("tasks_db_new_ordering_idx", plan)
+            else:
+                self.assertIn("Index lookup", plan)
+                self.assertIn("using tasks_db_new_ordering_idx", plan)
         else:
             self.fail("Unknown database engine")
 
