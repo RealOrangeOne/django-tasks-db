@@ -5,7 +5,6 @@ from functools import wraps
 from typing import Any, TypeVar
 from uuid import UUID
 
-import django
 from django.db import transaction
 from django.db.backends.base.base import BaseDatabaseWrapper
 from typing_extensions import ParamSpec
@@ -14,43 +13,25 @@ T = TypeVar("T")
 P = ParamSpec("P")
 
 
-def connection_requires_manual_exclusive_transaction(
-    connection: BaseDatabaseWrapper,
-) -> bool:
-    """
-    Determine whether the backend requires manual transaction handling.
-
-    Extracted from `exclusive_transaction` for unit testing purposes.
-    """
-    if connection.vendor != "sqlite":
-        return False
-
-    if django.VERSION < (5, 1):
-        return True
-
-    if not hasattr(connection, "transaction_mode"):
-        # Manually called to set `transaction_mode`
-        connection.get_connection_params()
-
-    return connection.transaction_mode != "EXCLUSIVE"  # type:ignore[attr-defined,no-any-return]
-
-
 @contextmanager
 def exclusive_transaction(using: str | None = None) -> Generator[Any, Any, Any]:
     """
     Wrapper around `transaction.atomic` which ensures transactions on SQLite are exclusive.
-
-    This functionality is built-in to Django 5.1+.
     """
     connection: BaseDatabaseWrapper = transaction.get_connection(using)
 
-    if connection_requires_manual_exclusive_transaction(connection):
-        with connection.cursor() as c:
-            c.execute("BEGIN EXCLUSIVE")
-            try:
+    if connection.vendor == "sqlite":
+        if not hasattr(connection, "transaction_mode"):
+            # Manually called to set `transaction_mode`
+            connection.get_connection_params()
+
+        old_transaction_mode = connection.transaction_mode  # type: ignore[attr-defined]
+        try:
+            connection.transaction_mode = "EXCLUSIVE"  # type: ignore[attr-defined]
+            with transaction.atomic(using=using):
                 yield
-            finally:
-                c.execute("COMMIT")
+        finally:
+            connection.transaction_mode = old_transaction_mode  # type: ignore[attr-defined]
     else:
         with transaction.atomic(using=using):
             yield

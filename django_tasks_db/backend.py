@@ -117,16 +117,6 @@ class DatabaseBackend(BaseTaskBackend):
 
         return db_result.task_result
 
-    async def _asend_task_enqueued_signal(self, task_result: TaskResult) -> None:
-        if VERSION < (5, 0):
-            from asgiref.sync import sync_to_async
-
-            await sync_to_async(task_enqueued.send, thread_sensitive=True)(
-                type(self), task_result=task_result
-            )
-        else:
-            await task_enqueued.asend(type(self), task_result=task_result)
-
     async def aenqueue(
         self,
         task: Task[P, T],
@@ -137,7 +127,7 @@ class DatabaseBackend(BaseTaskBackend):
 
         db_result = await self._atask_to_db_task(task, args, kwargs)
 
-        await self._asend_task_enqueued_signal(db_result.task_result)
+        await task_enqueued.asend(type(self), task_result=db_result.task_result)
 
         return db_result.task_result
 

@@ -17,7 +17,6 @@ from io import StringIO
 from typing import Any, cast
 from unittest import mock, skipIf
 
-import django
 from django import VERSION
 from django.contrib import admin
 from django.core.exceptions import ImproperlyConfigured, SuspiciousOperation
@@ -68,7 +67,6 @@ from django_tasks_db.management.commands.prune_db_task_results import (
 )
 from django_tasks_db.models import DBTaskResult, get_date_max
 from django_tasks_db.utils import (
-    connection_requires_manual_exclusive_transaction,
     exclusive_transaction,
     normalize_uuid,
 )
@@ -1275,22 +1273,6 @@ class ConnectionExclusiveTranscationTestCase(TransactionTestCase):
     def tearDown(self) -> None:
         self.connection.close()
         # connection.close()
-
-    @skipIf(connection.vendor == "sqlite", "SQLite handled separately")
-    def test_non_sqlite(self) -> None:
-        self.assertFalse(
-            connection_requires_manual_exclusive_transaction(self.connection)
-        )
-
-    @skipIf(
-        django.VERSION >= (5, 1),
-        "Newer Django versions support custom transaction modes",
-    )
-    @skipIf(connection.vendor != "sqlite", "SQLite only")
-    def test_old_django_requires_manual_transaction(self) -> None:
-        self.assertTrue(
-            connection_requires_manual_exclusive_transaction(self.connection)
-        )
 
     @skipIf(connection.vendor != "sqlite", "SQLite only")
     def test_exclusive_transaction(self) -> None:
