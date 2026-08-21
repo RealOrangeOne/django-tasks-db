@@ -1,6 +1,6 @@
 services:
   postgresql:
-    image: postgres:16-alpine
+    image: postgres:alpine
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
@@ -8,7 +8,7 @@ services:
       - 15432:5432
 
   mysql:
-    image: mysql:8.4
+    image: mysql:lts
     environment:
       MYSQL_ROOT_PASSWORD: django
       MYSQL_DATABASE: django
