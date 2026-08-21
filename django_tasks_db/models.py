@@ -1,6 +1,7 @@
 import datetime
 import logging
 import uuid
+from collections.abc import Sequence
 from traceback import format_exception
 from typing import TYPE_CHECKING, Any, Generic, Optional, TypeVar
 
@@ -8,6 +9,8 @@ import django
 from django.conf import settings
 from django.core.exceptions import SuspiciousOperation
 from django.db import models
+from django.db.backends.base.schema import BaseDatabaseSchemaEditor
+from django.db.backends.ddl_references import Statement  # add this
 from django.db.models import F, Q
 from django.db.models.constraints import CheckConstraint
 from django.utils import timezone
@@ -51,6 +54,56 @@ def get_date_max() -> datetime.datetime:
     return datetime.datetime(
         9999, 1, 1, tzinfo=datetime.timezone.utc if settings.USE_TZ else None
     )
+
+
+class ConditionalPartialIndex(models.Index):
+    """
+    An index that applies its condition only on backends that support partial/filtered indexes.
+    On unsupported backends, the index is created without the condition,
+    rather than being skipped altogether.
+    """
+
+    def __init__(
+        self,
+        *expressions: Any,
+        condition: Q | None = None,
+        **kwargs: Any,
+    ) -> None:
+        # Capture condition before passing to constructor so it's unset and the index can always be applied.
+        # See add_index.
+        self._partial_condition = condition
+        super().__init__(*expressions, **kwargs)
+
+    @property
+    def contains_expressions(self) -> bool:
+        # Pretend there are no expressions.
+        # Some DB backends claim to not support expressions, but do support them if they're simple enough.
+        return False
+
+    def create_sql(
+        self,
+        model: type[models.Model],
+        schema_editor: BaseDatabaseSchemaEditor,
+        using: str = "",
+        **kwargs: Any,
+    ) -> Statement:
+        if (
+            self._partial_condition is not None
+            and schema_editor.connection.features.supports_partial_indexes
+        ):
+            # Add condition back just before executing SQL so the condition is included.
+            self.condition = self._partial_condition
+            try:
+                return super().create_sql(model, schema_editor, using=using, **kwargs)
+            finally:
+                self.condition = None
+        return super().create_sql(model, schema_editor, using=using, **kwargs)
+
+    def deconstruct(self) -> tuple[str, Sequence[Any], dict[str, Any]]:
+        path, args, kwargs = super().deconstruct()
+        if self._partial_condition is not None:
+            kwargs["condition"] = self._partial_condition
+        return path, args, kwargs
 
 
 class DBTaskResultQuerySet(models.QuerySet["DBTaskResult"]):
@@ -124,7 +177,7 @@ class DBTaskResult(GenericBase[P, T], models.Model):
         verbose_name = _("Task Result")
         verbose_name_plural = _("Task Results")
         indexes = [
-            models.Index(
+            ConditionalPartialIndex(
                 "status",
                 *ordering,
                 name="tasks_db_new_ordering_idx",
