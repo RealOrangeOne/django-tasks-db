@@ -53,7 +53,13 @@ DATABASES = {
 }
 
 if "sqlite" in DATABASES["default"]["ENGINE"]:
-    DATABASES["default"]["TEST"] = {"NAME": os.path.join(BASE_DIR, "db-test.sqlite3")}
+    DATABASES["default"]["OPTIONS"] = {"timeout": 5}
+    DATABASES["default"]["TEST"] = {
+        "NAME": os.path.join(BASE_DIR, "db-test.sqlite3"),
+        "OPTIONS": {
+            "timeout": 5,
+        },
+    }
 
 
 USE_TZ = True
