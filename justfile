@@ -33,4 +33,7 @@ test-postgres *ARGS:
 test-mysql *ARGS:
     DATABASE_URL=mysql://root:django@127.0.0.1:13306/django python -m manage test --shuffle --noinput {{ ARGS }}
 
-test-dbs *ARGS: start-dbs test-postgres test-mysql test-sqlite
+test-mariadb *ARGS:
+    DATABASE_URL=mysql://root:django@127.0.0.1:13307/django python -m manage test --shuffle --noinput {{ ARGS }}
+
+test-dbs *ARGS: start-dbs test-postgres test-mysql test-mariadb test-sqlite

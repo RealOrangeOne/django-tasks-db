@@ -14,3 +14,11 @@ services:
       MYSQL_DATABASE: django
     ports:
       - 13306:3306
+
+  mariadb:
+    image: mariadb:lts
+    environment:
+      MYSQL_ROOT_PASSWORD: django
+      MYSQL_DATABASE: django
+    ports:
+      - 13307:3306

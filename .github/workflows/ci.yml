@@ -96,7 +96,7 @@ jobs:
     runs-on: ubuntu-latest
     services:
       mysql:
-        image: mysql:lts
+        image: ${{ matrix.engine }}
         env:
           MYSQL_ROOT_PASSWORD: django
           MYSQL_DATABASE: django
@@ -106,6 +106,7 @@ jobs:
       fail-fast: false
       matrix:
         django-version: ["5.2", "6.0"]
+        engine: ["mysql:lts", "mariadb:lts"]
     steps:
       - uses: actions/checkout@v6
       - name: Set up Python 3.14
