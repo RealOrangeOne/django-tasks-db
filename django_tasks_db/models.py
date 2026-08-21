@@ -5,7 +5,6 @@ from collections.abc import Sequence
 from traceback import format_exception
 from typing import TYPE_CHECKING, Any, Generic, Optional, TypeVar
 
-import django
 from django.conf import settings
 from django.core.exceptions import SuspiciousOperation
 from django.db import models
@@ -186,21 +185,12 @@ class DBTaskResult(GenericBase[P, T], models.Model):
             models.Index(fields=["queue_name"]),
             models.Index(fields=["backend_name"]),
         ]
-
-        if django.VERSION >= (5, 1):
-            constraints = [
-                CheckConstraint(
-                    condition=Q(priority__range=(TASK_MIN_PRIORITY, TASK_MAX_PRIORITY)),
-                    name="priority_range",
-                )
-            ]
-        else:
-            constraints = [
-                CheckConstraint(
-                    check=Q(priority__range=(TASK_MIN_PRIORITY, TASK_MAX_PRIORITY)),
-                    name="priority_range",
-                )  # type: ignore[call-arg]
-            ]
+        constraints = [
+            CheckConstraint(
+                condition=Q(priority__range=(TASK_MIN_PRIORITY, TASK_MAX_PRIORITY)),
+                name="priority_range",
+            )
+        ]
 
     @property
     def task(self) -> Task[P, T]:
