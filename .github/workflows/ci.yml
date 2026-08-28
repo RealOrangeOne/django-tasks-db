@@ -19,11 +19,15 @@ jobs:
       matrix:
         os: [windows-latest, macos-latest, ubuntu-latest]
         python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
-        django-version: ["5.2", "6.0"]
+        django-version: ["5.2", "6.0", "6.1"]
         exclude:
           - django-version: "6.0"
             python-version: "3.10"
           - django-version: "6.0"
+            python-version: "3.11"
+          - django-version: "6.1"
+            python-version: "3.10"
+          - django-version: "6.1"
             python-version: "3.11"
     steps:
       - uses: actions/checkout@v6
@@ -43,7 +47,7 @@ jobs:
           pip install Django~=${{ matrix.django-version }}
       - name: Install compat deps
         run: pip install -e '.[compat]'
-        if: matrix.django-version != '6.0'
+        if: matrix.django-version == '5.2'
       - name: Lint
         run: just lint
       - name: Run fast tests
@@ -67,7 +71,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        django-version: ["5.2", "6.0"]
+        django-version: ["5.2", "6.0", "6.1"]
     steps:
       - uses: actions/checkout@v6
       - name: Set up Python 3.14
@@ -86,7 +90,7 @@ jobs:
           pip install Django~=${{ matrix.django-version }}
       - name: Install compat deps
         run: pip install -e '.[compat]'
-        if: matrix.django-version != '6.0'
+        if: matrix.django-version == '5.2'
       - name: Run tests
         run: just test -v2
         env:
@@ -105,7 +109,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        django-version: ["5.2", "6.0"]
+        django-version: ["5.2", "6.0", "6.1"]
         engine: ["mysql:lts", "mariadb:lts"]
     steps:
       - uses: actions/checkout@v6
@@ -125,7 +129,7 @@ jobs:
           pip install Django~=${{ matrix.django-version }}
       - name: Install compat deps
         run: pip install -e '.[compat]'
-        if: matrix.django-version != '6.0'
+        if: matrix.django-version == '5.2'
       - name: Run tests
         run: just test -v2
         env:
