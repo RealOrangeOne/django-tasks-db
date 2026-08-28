@@ -28,7 +28,7 @@ from django_tasks_db.compat import (
     task_started,
 )
 from django_tasks_db.models import DBTaskResult
-from django_tasks_db.utils import exclusive_transaction
+from django_tasks_db.utils import exclusive_transaction, is_locked_database_exception
 
 logger = logging.getLogger("django_tasks_db")
 
@@ -126,7 +126,7 @@ class Worker:
 
                     # Ignore locked databases and keep trying.
                     # It should unlock eventually.
-                    if "is locked" in e.args[0]:
+                    if is_locked_database_exception(e):
                         task_result = None
                     else:
                         raise
