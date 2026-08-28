@@ -1140,7 +1140,7 @@ class DatabaseTaskResultTestCase(TransactionTestCase):
         with exclusive_transaction():
             locked_result = DBTaskResult.objects.get_locked()
 
-            self.assertEqual(result.id, str(locked_result.id))
+            self.assertEqual(result.id, str(locked_result.id))  # type: ignore[union-attr]
 
             with self.assertRaisesMessage(OperationalError, "is locked"):
                 self.execute_in_new_connection(
@@ -1170,7 +1170,7 @@ class DatabaseTaskResultTestCase(TransactionTestCase):
             locked_result = DBTaskResult.objects.filter(
                 priority=result.task.priority
             ).get_locked()
-            self.assertEqual(str(locked_result.id), result.id)
+            self.assertEqual(str(locked_result.id), result.id)  # type: ignore[union-attr]
 
             self.assertEqual(
                 len(
@@ -1202,7 +1202,7 @@ class DatabaseTaskResultTestCase(TransactionTestCase):
                 priority=result.task.priority
             ).get_locked()
 
-            self.assertEqual(result.id, str(locked_result.id))
+            self.assertEqual(result.id, str(locked_result.id))  # type: ignore[union-attr]
 
             with self.assertRaisesMessage(OperationalError, "is locked"):
                 self.execute_in_new_connection(
@@ -1259,7 +1259,7 @@ class DatabaseTaskResultTestCase(TransactionTestCase):
                     normalize_uuid(result_2.id),
                 )
                 self.assertEqual(
-                    normalize_uuid(DBTaskResult.objects.get_locked().id),
+                    normalize_uuid(DBTaskResult.objects.get_locked().id),  # type: ignore[union-attr]
                     normalize_uuid(result_2.id),
                 )
         finally:
