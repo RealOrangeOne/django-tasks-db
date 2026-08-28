@@ -10,7 +10,7 @@ description = "An ORM-based backend for Django Tasks"
 authors = [
     {name = "Jake Howard"},
 ]
-version = "0.12.0"
+version = "0.13.0"
 readme = "README.md"
 license = "BSD-3-Clause"
 license-files = ["LICENSE"]
