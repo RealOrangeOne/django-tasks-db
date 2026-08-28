@@ -5,7 +5,7 @@ from functools import wraps
 from typing import Any, TypeVar
 from uuid import UUID
 
-from django.db import transaction
+from django.db import OperationalError, transaction
 from django.db.backends.base.base import BaseDatabaseWrapper
 from typing_extensions import ParamSpec
 
@@ -74,3 +74,14 @@ def retry(*, retries: int = 3, backoff_delay: float = 0.1) -> Callable:
         return inner_wrapper
 
     return wrapper
+
+
+def is_locked_database_exception(e: OperationalError) -> bool:
+    if isinstance(e.args[0], str) and "is locked" in e.args[0].lower():
+        return True
+
+    # MySQL has an error code in the first argument, and message in the second
+    elif isinstance(e.args[0], int) and e.args[0] == 1205:
+        return True
+
+    return False
