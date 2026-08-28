@@ -116,11 +116,14 @@ class Worker:
             with exclusive_transaction(tasks.db):
                 try:
                     task_result = tasks.get_locked()
+                    retrieved_task_result = True
 
                     if task_result is not None:
                         # "claim" the task, so it isn't run by another worker process
                         task_result.claim(self.worker_id)
                 except OperationalError as e:
+                    retrieved_task_result = False
+
                     # Ignore locked databases and keep trying.
                     # It should unlock eventually.
                     if "is locked" in e.args[0]:
@@ -131,7 +134,7 @@ class Worker:
             if task_result is not None:
                 self.run_task(task_result)
 
-            if self.batch and task_result is None:
+            if self.batch and retrieved_task_result and task_result is None:
                 # If we're running in "batch" mode, terminate the loop (and thus the worker)
                 logger.info(
                     "No more tasks to run for worker_id=%s - exiting gracefully.",
