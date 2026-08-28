@@ -113,11 +113,13 @@ class Worker:
             if self.excluded_queue_names:
                 tasks = tasks.exclude(queue_name__in=self.excluded_queue_names)
 
-            # During this transaction, all "ready" tasks are locked. Therefore, it's important
-            # it be as efficient as possible.
             with exclusive_transaction(tasks.db):
                 try:
                     task_result = tasks.get_locked()
+
+                    if task_result is not None:
+                        # "claim" the task, so it isn't run by another worker process
+                        task_result.claim(self.worker_id)
                 except OperationalError as e:
                     # Ignore locked databases and keep trying.
                     # It should unlock eventually.
@@ -125,10 +127,6 @@ class Worker:
                         task_result = None
                     else:
                         raise
-
-                if task_result is not None:
-                    # "claim" the task, so it isn't run by another worker process
-                    task_result.claim(self.worker_id)
 
             if task_result is not None:
                 self.run_task(task_result)

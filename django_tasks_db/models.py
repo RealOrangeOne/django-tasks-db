@@ -128,7 +128,6 @@ class DBTaskResultQuerySet(models.QuerySet["DBTaskResult"]):
     def finished(self) -> "DBTaskResultQuerySet":
         return self.failed() | self.successful()
 
-    @retry()
     def get_locked(self) -> Optional["DBTaskResult"]:
         """
         Get a job, locking the row and accounting for deadlocks.
@@ -254,7 +253,6 @@ class DBTaskResult(GenericBase[P, T], models.Model):
         except IndexError:
             return self.task_path
 
-    @retry(backoff_delay=0)
     def claim(self, worker_id: str) -> None:
         """
         Mark as job as being run
