@@ -7,6 +7,7 @@ import sys
 import time
 from argparse import ArgumentParser, ArgumentTypeError, BooleanOptionalAction
 from types import FrameType
+from typing import cast
 
 from django.conf import settings
 from django.core.exceptions import SuspiciousOperation
@@ -308,14 +309,22 @@ class Command(BaseCommand):
         tasks_logger = logging.getLogger(TASKS_LOGGER)
 
         if verbosity == 0:
-            tasks_logger.setLevel(logging.CRITICAL)
-            logger.setLevel(logging.CRITICAL)
+            log_level = logging.CRITICAL
         elif verbosity == 1:
-            tasks_logger.setLevel(logging.INFO)
-            logger.setLevel(logging.INFO)
+            log_level = logging.INFO
         else:
-            tasks_logger.setLevel(logging.DEBUG)
-            logger.setLevel(logging.DEBUG)
+            log_level = logging.DEBUG
+
+        logging_config = cast(dict[str, object], settings.LOGGING)
+        configured_loggers = cast(
+            dict[str, dict[str, object]], logging_config.get("loggers", {})
+        )
+        for logger_name, configured_logger in [
+            (TASKS_LOGGER, tasks_logger),
+            ("django_tasks_db", logger),
+        ]:
+            if "level" not in configured_loggers.get(logger_name, {}):
+                configured_logger.setLevel(log_level)
 
         # If no handler is configured, the logs won't show,
         # regardless of the set level.
