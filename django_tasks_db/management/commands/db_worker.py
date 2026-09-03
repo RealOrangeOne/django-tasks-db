@@ -152,6 +152,187 @@ class Worker:
         if hasattr(signal, "SIGQUIT"):
             signal.signal(signal.SIGQUIT, signal.SIG_DFL)
 
+    def run(self) -> None:
+        logger.info("Spawning isolated multi-threaded engine worker_id=%s", self.worker_id)
+
+        if self.startup_delay and self.interval:
+            time.sleep(random.random())
+
+        # 1. Establish isolated pure-signaling consumer loops
+        for q_name in self.queue_names:
+            msg_queue = SimpleQueue()
+            stop_event = threading.Event()
+            self.queues[q_name] = (msg_queue, stop_event)
+            
+            consumer = threading.Thread(
+                target=self._consumer_signaling_loop,
+                args=(q_name, msg_queue, stop_event, self.monitor_feedback_queue),
+                daemon=True,
+            )
+            self.consumer_threads[q_name] = consumer
+            consumer.start()
+
+        # 2. Establish task runner pool based on configurable num_threads bounds
+        for _ in range(self.num_threads):
+            runner = threading.Thread(
+                target=self._task_runner_compute_loop, 
+                args=(self.monitor_feedback_queue, self.queues), 
+                daemon=True
+            )
+            self.task_runner_threads.append(runner)
+            runner.start()
+
+        # 3. Spawn the sole database-bound supervisor monitor thread (NOT a daemon thread)
+        self.monitor_thread = threading.Thread(target=self._monitor_dispatcher_loop, daemon=False)
+        self.monitor_thread.start()
+
+        # High-level orchestrator loop checks running statuses against the user interval value
+        while self.running:
+            if self.max_tasks is not None and self._run_tasks >= self.max_tasks:
+                logger.info("Max task threshold reached (%d). Halting worker.", self._run_tasks)
+                self.shutdown()
+                return
+
+            if not self.monitor_thread.is_alive():
+                logger.critical("Critical error: Persistent monitor thread crashed. Stopping engine.")
+                self.shutdown()
+                return
+
+            time.sleep(self.interval)
+
+    def _monitor_dispatcher_loop(self) -> None:
+        """The absolute ONLY location touching the Django ORM. Loops on event state status."""
+        logger.debug("Persistent ORM monitor loop started.")
+        close_old_connections()
+        
+        while self.monitor_running_event.is_set():
+            try:
+                # Phase A: Block and listen on the feedback SimpleQueue using the interval timeout parameter
+                try:
+                    feedback = self.monitor_feedback_queue.get(timeout=self.interval)
+                    
+                    while True:
+                        match feedback:
+                            case ("SIGNAL_ACK", q_name, details):
+                                logger.info("Queue [%s] Ping Response -> %s", q_name, details)
+                            
+                            case ("RECOVERY_CHECK_ACK", q_name, task_id, is_active):
+                                if task_id in self.recovery_responses:
+                                    if is_active:
+                                        self.recovery_responses[task_id].add("__ACTIVE__")
+                                    
+                                    self.recovery_responses[task_id].add(q_name)
+                                    
+                                    if len(self.queue_names) == len(self.recovery_responses[task_id] - {"__ACTIVE__"}):
+                                        responses = self.recovery_responses.pop(task_id)
+                                        
+                                        if "__ACTIVE__" not in responses:
+                                            logger.warning("Task ID %s verified as LOST across all local queues. Resetting database state...", task_id)
+                                            try:
+                                                stuck_task = DBTaskResult.objects.get(id=task_id)
+                                                stuck_task.worker_id = None
+                                                stuck_task.status = "ready" 
+                                                stuck_task.save(update_fields=["worker_id", "status"])
+                                            except Exception:
+                                                logger.exception("Failed to reset database parameters for lost task id=%s", task_id)
+                                        else:
+                                            logger.debug("Task ID %s is safely executing inside a local compute thread.", task_id)
+
+                            case ("TASK_SUCCESS", db_task_id, return_val):
+                                try:
+                                    res = DBTaskResult.objects.get(id=db_task_id)
+                                    res.set_successful(return_val)
+                                except Exception:
+                                    logger.exception("Failed to write back success for task id=%s", db_task_id)
+                                self._run_tasks += 1
+                            case ("TASK_FAILURE", db_task_id, error_instance):
+                                try:
+                                    res = DBTaskResult.objects.get(id=db_task_id)
+                                    res.set_failed(error_instance)
+                                except Exception:
+                                    logger.exception("Failed to record task failure for id=%s", db_task_id)
+                                self._run_tasks += 1
+                        
+                        try:
+                            feedback = self.monitor_feedback_queue.get_nowait()
+                        except Empty:
+                            break
+                except Empty:
+                    pass
+
+                if not self.monitor_running_event.is_set():
+                    continue
+
+                # Phase B: One-time recovery sweep using our pre-resolved queues tuple
+                if not self.startup_recovery_triggered:
+                    self.startup_recovery_triggered = True
+                    
+                    stuck_candidates = DBTaskResult.objects.filter(
+                        backend_name=self.backend_name,
+                        status="running"
+                    )
+                    if self.queue_names:
+                        stuck_candidates = stuck_candidates.filter(queue_name__in=self.queue_names)
+                    
+                    for candidate in stuck_candidates:
+                        if candidate.id not in self.recovery_responses:
+                            self.recovery_responses[candidate.id] = set()
+                            logger.info("Startup Audit: Broadcasting verification to locate potential lost task ID: %s", candidate.id)
+                            
+                            for q_name, (msg_queue, _) in self.queues.items():
+                                msg_queue.put(("AUDIT_LOST_TASK", candidate.id))
+
+                # Phase C: Query the database for standard new ready background tasks
+                tasks = DBTaskResult.objects.ready().filter(backend_name=self.backend_name)
+                if self.queue_names:
+                    tasks = tasks.filter(queue_name__in=self.queue_names)
+
+                task_result = None
+                retrieved_task = False
+
+                with exclusive_transaction(tasks.db):
+                    try:
+                        task_result = tasks.get_locked()
+                        retrieved_task = True
+                        if task_result is not None:
+                            task_result.claim(self.worker_id)
+                    except OperationalError as e:
+                        retrieved_task = False
+                        if not is_locked_database_exception(e):
+                            raise
+
+                self.consecutive_blips = 0
+
+                if task_result is not None:
+                    self.task_data_queue.put(task_result)
+                
+                if self.batch and retrieved_task and None is task_result:
+                    logger.info("Batch criteria satisfied. Shutting down system execution.")
+                    threading.Thread(target=self.shutdown, daemon=True).start()
+                    self.monitor_running_event.clear()
+                    continue
+
+            except (OperationalError, Exception) as err:
+                self.consecutive_blips += 1
+                logger.error("Monitor thread encountered database error (%d/%d): %s", self.consecutive_blips, self.blip_budget, err)
+                try:
+                    close_old_connections()
+                except Exception:
+                    pass
+
+                if self.consecutive_blips >= self.blip_budget:
+                    threading.Thread(target=self.shutdown, daemon=True).start()
+                    self.monitor_running_event.clear()
+                    continue
+            
+        logger.info("Monitor thread loop exited. Distributing final channel shutdowns...")
+        for q_name, (msg_queue, stop_event) in self.queues.items():
+            stop_event.set()
+            msg_queue.put("SHUTDOWN")
+            
+        logger.debug("Monitor dispatcher thread gracefully exited.")
+
+
 
 #### old content below here ####
 
