@@ -1,6 +1,163 @@
 import logging
 import math
 import os
+import queue
+import random
+import signal
+import sys
+import threading
+import time
+from argparse import ArgumentParser, ArgumentTypeError, BooleanOptionalAction
+from queue import Empty, SimpleQueue
+from types import FrameType
+
+from django.conf import settings
+from django.core.exceptions import SuspiciousOperation
+from django.core.management.base import BaseCommand, CommandError
+from django.db import close_old_connections
+from django.db.utils import OperationalError
+from django.utils.autoreload import DJANGO_AUTORELOAD_ENV, run_with_reloader
+from django.utils.crypto import get_random_string
+
+from django_tasks_db.backend import DatabaseBackend
+from django_tasks_db.compat import (
+    DEFAULT_TASK_BACKEND_ALIAS,
+    DEFAULT_TASK_QUEUE_NAME,
+    TASKS_LOGGER,
+    InvalidTaskBackend,
+    TaskContext,
+    task_backends,
+    task_finished,
+    task_started,
+)
+from django_tasks_db.models import DBTaskResult
+from django_tasks_db.utils import exclusive_transaction, is_locked_database_exception
+
+logger = logging.getLogger("django_tasks_db")
+
+
+def get_resolved_queue_names(
+    backend_name: str, 
+    queue_names: list[str], 
+    excluded_queue_names: list[str]
+) -> tuple[str, ...]:
+    """
+    Translates '*' to the complete collection of configured backend queues by 
+    inspecting the task_backends instance registry directly, then strips exclusions.
+    """
+    resolved = set(queue_names)
+
+    if "*" in resolved:
+        backend_instance = task_backends[backend_name]
+        configured_queues = getattr(backend_instance, "queue_names", [])
+        
+        if not configured_queues and hasattr(backend_instance, "queues"):
+            configured_queues = list(backend_instance.queues.keys())
+            
+        resolved.remove("*")
+        resolved.update(configured_queues)
+
+    resolved.difference_update(excluded_queue_names)
+    return tuple(sorted(resolved))
+
+
+class Worker:
+    def __init__(
+        self,
+        *,
+        queue_names: tuple[str, ...],
+        interval: float,
+        batch: bool,
+        backend_name: str,
+        startup_delay: bool,
+        max_tasks: int | None,
+        worker_id: str,
+        excluded_queue_names: list[str],
+        num_threads: int = 1,
+        blip_budget: int = 5,
+    ):
+        self.queue_names = queue_names
+        self.process_all_queues = 0 == len(queue_names) or any(q in queue_names for q in ("*", ""))
+        self.excluded_queue_names = excluded_queue_names
+        self.interval = interval
+        self.batch = batch
+        self.backend_name = backend_name
+        self.startup_delay = startup_delay
+        self.max_tasks = max_tasks
+        self.worker_id = worker_id
+        self.num_threads = num_threads
+        
+        self.blip_budget = blip_budget
+        self.consecutive_blips = 0
+
+        self.running = True
+        self._run_tasks = 0
+
+        # Master Thread Control: Running event that is CLEARED to signal stop
+        self.monitor_running_event = threading.Event()
+        self.monitor_running_event.set() 
+        
+        self.monitor_thread: threading.Thread | None = None
+        self.task_runner_threads: list[threading.Thread] = []
+        self.consumer_threads: dict[str, threading.Thread] = {}
+        
+        # Unique Signaling Channels: queue_name -> (SimpleQueue, stopping_event)
+        self.queues: dict[str, tuple[SimpleQueue, threading.Event]] = {}
+        
+        # Recovery Synchronization State Trackers
+        self.startup_recovery_triggered = False
+        self.recovery_responses: dict[str, set[str]] = {} 
+        
+        # Decoupled Compute & Feedback Channels
+        self.task_data_queue: queue.Queue = queue.Queue()
+        self.monitor_feedback_queue: SimpleQueue = SimpleQueue()
+
+    def shutdown(self, signum: int | None = None, frame: FrameType | None = None) -> None:
+        """Main orchestrator thread clears the running event and waits for cleanup."""
+        if not self.running:
+            self.reset_signals()
+            sys.exit(1)
+
+        if signum:
+            logger.warning("Received signal %s - structural teardown triggered...", signal.strsignal(signum))
+        else:
+            logger.critical("Emergency exit: Monitor thread exhausted its database blip budget.")
+
+        self.running = False
+        self.monitor_running_event.clear() 
+
+        # Wait for the monitor thread to execute its clean exit signaling loop
+        if self.monitor_thread and self.monitor_thread.is_alive():
+            self.monitor_thread.join(timeout=2.0)
+
+        # Join signaling loops safely
+        for thread in self.consumer_threads.values():
+            thread.join(timeout=1.0)
+            
+        # Join execution thread tracks safely
+        for thread in self.task_runner_threads:
+            thread.join(timeout=2.0)
+
+        sys.exit(0 if signum else 1)
+
+    def configure_signals(self) -> None:
+        signal.signal(signal.SIGINT, self.shutdown)
+        signal.signal(signal.SIGTERM, self.shutdown)
+        if hasattr(signal, "SIGQUIT"):
+            signal.signal(signal.SIGQUIT, self.shutdown)
+
+    def reset_signals(self) -> None:
+        signal.signal(signal.SIGINT, signal.SIG_DFL)
+        signal.signal(signal.SIGTERM, signal.SIG_DFL)
+        if hasattr(signal, "SIGQUIT"):
+            signal.signal(signal.SIGQUIT, signal.SIG_DFL)
+
+
+#### old content below here ####
+
+import logging
+import math
+import os
 import random
 import signal
 import sys
