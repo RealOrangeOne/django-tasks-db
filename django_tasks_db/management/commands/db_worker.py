@@ -332,7 +332,289 @@ class Worker:
             
         logger.debug("Monitor dispatcher thread gracefully exited.")
 
+    def _consumer_signaling_loop(
+        self, 
+        queue_name: str, 
+        msg_queue: SimpleQueue, 
+        stopping_event: threading.Event, 
+        feedback_queue: SimpleQueue
+    ) -> None:
+        """Signaling channel loop using SimpleQueue mapping with a 0.5s timeout."""
+        logger.debug("Signaling monitor active for: %s", queue_name)
+        
+        # Local metrics and identifiers isolated completely to this thread context
+        local_current_task_id = None
+        local_total_tasks_run = 0
+        
+        while not stopping_event.is_set():
+            try:
+                msg = msg_queue.get(timeout=0.5)
+                
+                match msg:
+                    case "SHUTDOWN":
+                        stopping_event.set()
+                        continue
+                        
+                    case ("TASK_STARTED", task_id):
+                        local_current_task_id = task_id
+                        logger.debug("Queue [%s] registered active execution for local task ID: %s", queue_name, task_id)
+                        
+                    case ("TASK_FINISHED", task_id):
+                        if task_id == local_current_task_id:
+                            local_current_task_id = None
+                        local_total_tasks_run += 1
+                        logger.debug("Queue [%s] cleared execution for local task ID: %s", queue_name, task_id)
+                        
+                    case ("AUDIT_LOST_TASK", target_id):
+                        is_active_here = (target_id == local_current_task_id)
+                        feedback_queue.put(("RECOVERY_CHECK_ACK", queue_name, target_id, is_active_here))
+                        
+                    case "QUERY_CURRENT_TASK":
+                        feedback_queue.put(("SIGNAL_ACK", queue_name, f"CURRENT_TASK_ID:{local_current_task_id}"))
+                        
+                    case "PING":
+                        feedback_payload = f"CURRENT_TASK_ID:{local_current_task_id}|TOTAL_TASKS_RUN:{local_total_tasks_run}"
+                        feedback_queue.put(("SIGNAL_ACK", queue_name, feedback_payload))
+                        
+                    case _:
+                        feedback_queue.put(("SIGNAL_ACK", queue_name, msg))
+            except Empty:
+                continue
 
+    def _task_runner_compute_loop(self, feedback_queue: SimpleQueue, signaling_queues: dict) -> None:
+        """Pure compute environment worker threads. Emits task lifecycle signals directly from here."""
+        logger.debug("Compute worker thread initialization complete.")
+        while self.monitor_running_event.is_set():
+            task_retrieved = False
+            task_item = None
+
+            try:
+                task_item = self.task_data_queue.get(timeout=1.0)
+                task_retrieved = True  
+                
+                if isinstance(task_item, DBTaskResult):
+                    q_name = task_item.queue_name
+                    task_id = task_item.id
+                    
+                    if q_name in signaling_queues:
+                        signaling_queues[q_name].put(("TASK_STARTED", task_id))
+
+                    try:
+                        task = task_item.task
+                        task_result = task_item.task_result
+                        backend_type = task.get_backend()
+                        
+                        task_started.send(sender=backend_type, task_result=task_result)
+                        
+                        if task.takes_context:
+                            return_value = task.call(TaskContext(task_result=task_result), *task_result.args, **task_result.kwargs)
+                        else:
+                            return_value = task.call(*task_result.args, **task_result.kwargs)
+
+                        feedback_queue.put(("TASK_SUCCESS", task_item.id, return_value))
+                    except BaseException as ex:
+                        feedback_queue.put(("TASK_FAILURE", task_item.id, ex))
+                    finally:
+                        if 'backend_type' in locals():
+                            task_finished.send(sender=backend_type, task_result=task_item.task_result)
+                        if q_name in signaling_queues:
+                            signaling_queues[q_name].put(("TASK_FINISHED", task_id))
+                
+            except Empty:
+                continue
+            finally:
+                if task_retrieved:
+                    self.task_data_queue.task_done()
+                    
+        logger.debug("Compute worker thread gracefully exited.")
+
+def valid_backend_name(val: str) -> str:
+    try:
+        backend = task_backends[val]
+    except InvalidTaskBackend as e:
+        raise ArgumentTypeError(e.args) from e
+    if not isinstance(backend, DatabaseBackend):
+        raise ArgumentTypeError(f"Backend '{val}' is not a database backend")
+    return val
+
+
+def valid_interval(val: str) -> float:
+    num = float(val)
+    if not math.isfinite(num):
+        raise ArgumentTypeError("Must be a finite floating point value")
+    if num < 0:
+        raise ArgumentTypeError("Must be zero or greater")
+    return num
+
+
+def valid_max_tasks(val: str) -> int:
+    num = int(val)
+    if num <= 0:
+        raise ArgumentTypeError("Must be greater than zero")
+    return num
+
+
+def valid_thread_count(val: str) -> int:
+    num = int(val)
+    if num <= 0:
+        raise ArgumentTypeError("Thread count must be greater than zero")
+    return num
+
+
+def validate_worker_id(val: str) -> str:
+    if not val:
+        raise ArgumentTypeError("Worker id must not be empty")
+    if len(val) > 64:
+        raise ArgumentTypeError("Worker ids must be shorter than 64 characters")
+    return val
+
+
+class Command(BaseCommand):
+    help = "Run a database background worker"
+
+    def add_arguments(self, parser: ArgumentParser) -> None:
+        parser.add_argument(
+            "--queue-name",
+            nargs="?",
+            default=DEFAULT_TASK_QUEUE_NAME,
+            type=str,
+            help="The queues to process. Separate multiple with a comma. To process all queues, use '*' (default: %(default)r)",
+        )
+        parser.add_argument(
+            "--exclude-queues",
+            nargs="?",
+            default="",
+            type=str,
+            help="Queues to exclude. Separate multiple with a comma.",
+        )
+        parser.add_argument(
+            "--interval",
+            nargs="?",
+            default=1,
+            type=valid_interval,
+            help="The interval (in seconds) to wait, when there are no tasks in the queue, before checking for tasks again (default: %(default)r)",
+        )
+        parser.add_argument(
+            "--batch",
+            action="store_true",
+            help="Process all outstanding tasks, then exit. Can be used in combination with --max-tasks.",
+        )
+        parser.add_argument(
+            "--reload",
+            action=BooleanOptionalAction,
+            default=settings.DEBUG,
+            help="Reload the worker on code changes. Not recommended for production as tasks may not be stopped cleanly (default: DEBUG)",
+        )
+        parser.add_argument(
+            "--backend",
+            nargs="?",
+            default=DEFAULT_TASK_BACKEND_ALIAS,
+            type=valid_backend_name,
+            dest="backend_name",
+            help="The backend to operate on (default: %(default)r)",
+        )
+        parser.add_argument(
+            "--no-startup-delay",
+            action="store_false",
+            dest="startup_delay",
+            help="Don't add a small delay at startup.",
+        )
+        parser.add_argument(
+            "--max-tasks",
+            nargs="?",
+            default=None,
+            type=valid_max_tasks,
+            help="If provided, the maximum number of tasks the worker will execute before exiting.",
+        )
+        parser.add_argument(
+            "--threads",
+            nargs="?",
+            default=1,
+            type=valid_thread_count,
+            dest="num_threads",
+            help="The number of compute task execution threads to spawn (default: 1)",
+        )
+        parser.add_argument(
+            "--worker-id",
+            nargs="?",
+            type=validate_worker_id,
+            help="Worker id. MUST be unique across worker pool (default: auto-generate)",
+            default=None,
+        )
+
+    def configure_logging(self, verbosity: int) -> None:
+        tasks_logger = logging.getLogger(TASKS_LOGGER)
+
+        match verbosity:
+            case 0:
+                tasks_logger.setLevel(logging.CRITICAL)
+                logger.setLevel(logging.CRITICAL)
+            case 1:
+                tasks_logger.setLevel(logging.INFO)
+                logger.setLevel(logging.INFO)
+            case _:
+                tasks_logger.setLevel(logging.DEBUG)
+                logger.setLevel(logging.DEBUG)
+
+        if not tasks_logger.hasHandlers():
+            tasks_logger.addHandler(logging.StreamHandler(self.stdout))
+
+        if not logger.hasHandlers():
+            logger.addHandler(logging.StreamHandler(self.stdout))
+
+    def handle(
+        self,
+        *,
+        verbosity: int,
+        queue_name: str,
+        interval: float,
+        batch: bool,
+        backend_name: str,
+        startup_delay: bool,
+        reload: bool,
+        max_tasks: int | None,
+        num_threads: int,
+        worker_id: str | None,
+        exclude_queues: str,
+        **options: dict,
+    ) -> None:
+        self.configure_logging(verbosity)
+
+        resolved_worker_id = worker_id if worker_id is not None else get_random_string(32)
+
+        if reload and batch:
+            logger.warning(
+                "Warning: --reload and --batch cannot be specified together. Disabling autoreload."
+            )
+            reload = False
+
+        raw_queue_names = queue_name.split(",")
+        excluded_queue_names = exclude_queues.split(",") if exclude_queues else []
+
+        if excluded_queue_names and "*" not in raw_queue_names:
+            raise CommandError("--exclude-queues can only be used with --queue-name=*")
+
+        resolved_queues = get_resolved_queue_names(backend_name, raw_queue_names, excluded_queue_names)
+
+        worker = Worker(
+            queue_names=resolved_queues,
+            interval=interval,
+            batch=batch,
+            backend_name=backend_name,
+            startup_delay=startup_delay,
+            max_tasks=max_tasks,
+            worker_id=resolved_worker_id,
+            excluded_queue_names=excluded_queue_names,
+            num_threads=num_threads,
+        )
+
+        if reload:
+            if "true" == os.environ.get(DJANGO_AUTORELOAD_ENV):
+                worker.configure_signals()
+            run_with_reloader(worker.run)
+        else:
+            worker.configure_signals()
+            worker.run()
 
 #### old content below here ####
 
