@@ -554,6 +554,15 @@ class DatabaseBackendWorkerTestCase(TransactionTestCase):
         )
     )
 
+    def setUp(self) -> None:
+        super().setUp()
+        logger = logging.getLogger("django_tasks_db")
+        tasks_logger = logging.getLogger(LOGGER)
+        self.addCleanup(logger.setLevel, logger.level)
+        self.addCleanup(tasks_logger.setLevel, tasks_logger.level)
+        logger.setLevel(logging.NOTSET)
+        tasks_logger.setLevel(logging.NOTSET)
+
     def tearDown(self) -> None:
         logger = logging.getLogger("django_tasks_db")
         tasks_logger = logging.getLogger(LOGGER)
@@ -565,17 +574,7 @@ class DatabaseBackendWorkerTestCase(TransactionTestCase):
         for handler in tasks_logger.handlers:
             tasks_logger.removeHandler(handler)
 
-    @override_settings(
-        LOGGING={
-            "version": 1,
-            "disable_existing_loggers": False,
-            "loggers": {
-                "django_tasks_db": {"level": "WARNING"},
-                LOGGER: {"level": "ERROR"},
-            },
-        }
-    )
-    def test_configure_logging_preserves_configured_levels(self) -> None:
+    def test_configure_logging_preserves_explicit_logger_levels(self) -> None:
         logger = logging.getLogger("django_tasks_db")
         tasks_logger = logging.getLogger(LOGGER)
         original_logger_level = logger.level
@@ -590,6 +589,15 @@ class DatabaseBackendWorkerTestCase(TransactionTestCase):
 
         self.assertEqual(logger.level, logging.WARNING)
         self.assertEqual(tasks_logger.level, logging.ERROR)
+
+    def test_configure_logging_restores_inherited_levels(self) -> None:
+        logger = logging.getLogger("django_tasks_db")
+        tasks_logger = logging.getLogger(LOGGER)
+
+        self.run_worker()
+
+        self.assertEqual(logger.level, logging.NOTSET)
+        self.assertEqual(tasks_logger.level, logging.NOTSET)
 
     def test_run_enqueued_task(self) -> None:
         for task in [
