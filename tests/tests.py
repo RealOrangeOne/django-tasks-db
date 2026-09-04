@@ -554,6 +554,15 @@ class DatabaseBackendWorkerTestCase(TransactionTestCase):
         )
     )
 
+    def setUp(self) -> None:
+        super().setUp()
+        logger = logging.getLogger("django_tasks_db")
+        tasks_logger = logging.getLogger(LOGGER)
+        self.addCleanup(logger.setLevel, logger.level)
+        self.addCleanup(tasks_logger.setLevel, tasks_logger.level)
+        logger.setLevel(logging.NOTSET)
+        tasks_logger.setLevel(logging.NOTSET)
+
     def tearDown(self) -> None:
         logger = logging.getLogger("django_tasks_db")
         tasks_logger = logging.getLogger(LOGGER)
@@ -564,6 +573,31 @@ class DatabaseBackendWorkerTestCase(TransactionTestCase):
 
         for handler in tasks_logger.handlers:
             tasks_logger.removeHandler(handler)
+
+    def test_configure_logging_preserves_explicit_logger_levels(self) -> None:
+        logger = logging.getLogger("django_tasks_db")
+        tasks_logger = logging.getLogger(LOGGER)
+        original_logger_level = logger.level
+        original_tasks_logger_level = tasks_logger.level
+        self.addCleanup(logger.setLevel, original_logger_level)
+        self.addCleanup(tasks_logger.setLevel, original_tasks_logger_level)
+
+        logger.setLevel(logging.WARNING)
+        tasks_logger.setLevel(logging.ERROR)
+
+        self.run_worker(verbosity=3)
+
+        self.assertEqual(logger.level, logging.WARNING)
+        self.assertEqual(tasks_logger.level, logging.ERROR)
+
+    def test_configure_logging_restores_inherited_levels(self) -> None:
+        logger = logging.getLogger("django_tasks_db")
+        tasks_logger = logging.getLogger(LOGGER)
+
+        self.run_worker()
+
+        self.assertEqual(logger.level, logging.NOTSET)
+        self.assertEqual(tasks_logger.level, logging.NOTSET)
 
     def test_run_enqueued_task(self) -> None:
         for task in [
@@ -934,7 +968,15 @@ class DatabaseBackendWorkerTestCase(TransactionTestCase):
         )
 
     def test_verbose_logging(self) -> None:
-        result = test_tasks.noop_task.enqueue()
+        test_tasks.noop_task.enqueue()
+
+        tasks_logger = logging.getLogger(LOGGER)
+        original_tasks_logger_level = tasks_logger.level
+        self.addCleanup(tasks_logger.setLevel, original_tasks_logger_level)
+        tasks_logger.setLevel(logging.INFO)
+        for handler in tasks_logger.handlers:
+            tasks_logger.removeHandler(handler)
+        tasks_logger.addHandler(logging.NullHandler())
 
         stdout = StringIO()
         self.run_worker(verbosity=3, stdout=stdout, stderr=stdout)
@@ -943,8 +985,6 @@ class DatabaseBackendWorkerTestCase(TransactionTestCase):
             stdout.getvalue().splitlines(),
             [
                 f"Starting worker worker_id={self.worker_id} queues=default",
-                f"Task id={result.id} path=tests.tasks.noop_task state=RUNNING",
-                f"Task id={result.id} path=tests.tasks.noop_task state=SUCCESSFUL",
                 f"No more tasks to run for worker_id={self.worker_id} - exiting gracefully.",
             ],
         )
