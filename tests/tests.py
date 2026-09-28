@@ -15,7 +15,7 @@ from datetime import datetime, timedelta
 from functools import partial
 from io import StringIO
 from typing import Any, cast
-from unittest import mock, skipIf
+from unittest import expectedFailure, mock, skipIf
 
 from django import VERSION
 from django.contrib import admin
@@ -591,6 +591,27 @@ class DatabaseBackendWorkerTestCase(TransactionTestCase):
                 self.assertEqual(result.attempts, 1)
 
                 self.assertEqual(DBTaskResult.objects.ready().count(), 0)
+
+    # A receiver's error must not rewrite the outcome of a task that already ran:
+    # https://github.com/RealOrangeOne/django-tasks-db/issues/62
+    @expectedFailure
+    def test_failing_task_finished_receiver_keeps_the_task_successful(self) -> None:
+        def failing_receiver(sender: Any, task_result: Any, **kwargs: Any) -> None:
+            raise ConnectionError("metrics backend unreachable")
+
+        result = test_tasks.calculate_meaning_of_life.enqueue()
+        compat.task_finished.connect(
+            failing_receiver, dispatch_uid="failing_receiver", weak=False
+        )
+        try:
+            with contextlib.suppress(ConnectionError):
+                self.run_worker()
+        finally:
+            compat.task_finished.disconnect(dispatch_uid="failing_receiver")
+
+        result.refresh()
+        self.assertEqual(result.status, TaskResultStatus.SUCCESSFUL)
+        self.assertEqual(result.return_value, 42)
 
     def test_batch_processes_all_tasks(self) -> None:
         for _ in range(3):
