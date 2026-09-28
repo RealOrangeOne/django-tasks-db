@@ -59,6 +59,10 @@ dev = [
     "django-stubs[compatible-mypy]",
     "mypy==2.3.1",
     "dj-database-url",
+    "pytest==9.1.1",
+    "pytest-django==4.14.0",
+    # The worker's due-work contract (tests/due_work); the harness needs Python 3.12+.
+    "due-work-harness>=0.2.0; python_version >= '3.12'",
 ]
 mysql = [
     "mysqlclient"
@@ -91,8 +95,19 @@ disallow_untyped_decorators = true
 check_untyped_defs = true
 ignore_missing_imports = true
 
+[[tool.mypy.overrides]]
+# Below Python 3.12 due-work-harness is not installed, so its decorators are untyped.
+module = ["tests.due_work.*"]
+disallow_untyped_decorators = false
+
 [tool.django-stubs]
 django_settings_module = "tests.settings"
+
+[tool.pytest.ini_options]
+# Only the due-work contract runs under pytest; the rest of the suite uses `manage.py test`.
+DJANGO_SETTINGS_MODULE = "tests.settings"
+testpaths = ["tests/due_work"]
+addopts = ["-rxX"]
 
 [tool.coverage.run]
 branch = true

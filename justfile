@@ -36,4 +36,7 @@ test-mysql *ARGS:
 test-mariadb *ARGS:
     DATABASE_URL=mysql://root:django@127.0.0.1:13307/django python -m manage test --shuffle --noinput {{ ARGS }}
 
+test-due-work *ARGS:
+    DATABASE_URL={{ env_var_or_default("DATABASE_URL", "postgres://postgres:postgres@localhost:15432/postgres") }} python -m pytest {{ ARGS }}
+
 test-dbs *ARGS: start-dbs test-postgres test-mysql test-mariadb test-sqlite

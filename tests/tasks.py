@@ -1,4 +1,5 @@
 import time
+from collections import Counter
 from typing import Any
 
 try:
@@ -83,3 +84,21 @@ def get_task_id(context: TaskContext) -> str:
 def test_context(context: TaskContext, attempt: int) -> None:
     assert isinstance(context, TaskContext)
     assert context.attempt == attempt
+
+
+class Outbox:
+    """A system outside the database that a task reaches: it records each message instead of sending it."""
+
+    def __init__(self) -> None:
+        self.sent: Counter[str] = Counter()
+
+    def send(self, message: str) -> None:
+        self.sent[message] += 1
+
+
+outbox = Outbox()
+
+
+@task()
+def send_message(message: str) -> None:
+    outbox.send(message)
