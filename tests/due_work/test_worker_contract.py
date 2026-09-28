@@ -71,9 +71,21 @@ CONTRACT = worker_contract(
 WORKER_RUNS_A_TASK = CONTRACT.handoffs[0]
 
 
+# This is where the magic happens. The class is empty on purpose: the decorator reads
+# CONTRACT and generates its tests, bound to the real `db_worker`, `prune_db_task_results`
+# and send_message task. No test case is written by hand, and this file supplies only the
+# task and how to see its effect; the guarantees and their proofs are the integration's.
+#
+# One of the generated cases is how #62 was found: the handoff case replays one db_worker
+# run per thing that can go wrong (the worker dies after each commit or after the message
+# is sent, or a task_started or task_finished receiver raises) and compares each run with
+# a normal one. When a task_finished receiver raises, the message was sent but the task is
+# recorded FAILED, so the case fails. The contract declares that as a gap, so it is
+# reported as a strict XFAIL; the day every run matches, it passes, and the strict marker
+# fails the run until the gap is removed.
 @due_work_contract_suite(CONTRACT)
 class TestWorkerContract:
-    pass
+    """Every case in this class is generated from CONTRACT; see the comment above."""
 
 
 def _task(status: str, sent: int) -> TaskOutcome:
