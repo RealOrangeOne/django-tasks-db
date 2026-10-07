@@ -706,6 +706,29 @@ class DatabaseBackendWorkerTestCase(TransactionTestCase):
 
         self.assertEqual(DBTaskResult.objects.ready().count(), 0)
 
+    def test_task_finished_receiver_error_keeps_result(self) -> None:
+        result = test_tasks.calculate_meaning_of_life.enqueue()
+
+        received = []
+
+        def failing_receiver(sender: Any, task_result: Any, **kwargs: Any) -> None:
+            received.append(task_result.status)
+            raise ConnectionError("Receiver failed")
+
+        compat.task_finished.connect(failing_receiver, weak=False)
+        try:
+            with self.assertRaisesMessage(ConnectionError, "Receiver failed"):
+                self.run_worker()
+        finally:
+            compat.task_finished.disconnect(failing_receiver)
+
+        self.assertEqual(received, [TaskResultStatus.SUCCESSFUL])
+
+        result.refresh()
+        self.assertEqual(result.status, TaskResultStatus.SUCCESSFUL)
+        self.assertEqual(result.return_value, 42)
+        self.assertEqual(result.errors, [])
+
     def test_complex_exception(self) -> None:
         result = test_tasks.complex_exception.enqueue()
         self.assertEqual(DBTaskResult.objects.ready().count(), 1)
