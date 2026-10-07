@@ -243,6 +243,8 @@ class Command(BaseCommand):
     help = "Run a database background worker"
 
     def add_arguments(self, parser: ArgumentParser) -> None:
+        # Distinguish omitted verbosity from an explicit --verbosity=1.
+        parser.set_defaults(verbosity=None)
         parser.add_argument(
             "--queue-name",
             nargs="?",
@@ -304,20 +306,18 @@ class Command(BaseCommand):
             default=get_random_string(32),
         )
 
-    def configure_logging(self, verbosity: int) -> list[tuple[logging.Logger, int]]:
+    def configure_logging(self, verbosity: int | None) -> None:
         tasks_logger = logging.getLogger(TASKS_LOGGER)
-        previous_levels: list[tuple[logging.Logger, int]] = []
 
         if verbosity == 0:
             log_level = logging.CRITICAL
-        elif verbosity == 1:
+        elif verbosity is None or verbosity == 1:
             log_level = logging.INFO
         else:
             log_level = logging.DEBUG
 
         for configured_logger in [tasks_logger, logger]:
-            if configured_logger.level == logging.NOTSET:
-                previous_levels.append((configured_logger, logging.NOTSET))
+            if verbosity is not None or configured_logger.level == logging.NOTSET:
                 configured_logger.setLevel(log_level)
 
         # If no handler is configured, the logs won't show,
@@ -328,12 +328,10 @@ class Command(BaseCommand):
         if not logger.hasHandlers():
             logger.addHandler(logging.StreamHandler(self.stdout))
 
-        return previous_levels
-
     def handle(
         self,
         *,
-        verbosity: int,
+        verbosity: int | None,
         queue_name: str,
         interval: float,
         batch: bool,
@@ -345,43 +343,37 @@ class Command(BaseCommand):
         exclude_queues: str,
         **options: dict,
     ) -> None:
-        previous_levels = self.configure_logging(verbosity)
+        self.configure_logging(verbosity)
 
-        try:
-            if reload and batch:
-                logger.warning(
-                    "Warning: --reload and --batch cannot be specified together. Disabling autoreload."
-                )
-                reload = False
-
-            queue_names = queue_name.split(",")
-            excluded_queue_names = exclude_queues.split(",") if exclude_queues else []
-
-            if excluded_queue_names and "*" not in queue_names:
-                raise CommandError(
-                    "--exclude-queues can only be used with --queue-name=*"
-                )
-
-            worker = Worker(
-                queue_names=queue_names,
-                interval=interval,
-                batch=batch,
-                backend_name=backend_name,
-                startup_delay=startup_delay,
-                max_tasks=max_tasks,
-                worker_id=worker_id,
-                excluded_queue_names=excluded_queue_names,
+        if reload and batch:
+            logger.warning(
+                "Warning: --reload and --batch cannot be specified together. Disabling autoreload."
             )
+            reload = False
 
-            if reload:
-                if os.environ.get(DJANGO_AUTORELOAD_ENV) == "true":
-                    # Only the child process should configure its signals
-                    worker.configure_signals()
+        queue_names = queue_name.split(",")
+        excluded_queue_names = exclude_queues.split(",") if exclude_queues else []
 
-                run_with_reloader(worker.run)
-            else:
+        if excluded_queue_names and "*" not in queue_names:
+            raise CommandError("--exclude-queues can only be used with --queue-name=*")
+
+        worker = Worker(
+            queue_names=queue_names,
+            interval=interval,
+            batch=batch,
+            backend_name=backend_name,
+            startup_delay=startup_delay,
+            max_tasks=max_tasks,
+            worker_id=worker_id,
+            excluded_queue_names=excluded_queue_names,
+        )
+
+        if reload:
+            if os.environ.get(DJANGO_AUTORELOAD_ENV) == "true":
+                # Only the child process should configure its signals
                 worker.configure_signals()
-                worker.run()
-        finally:
-            for configured_logger, previous_level in previous_levels:
-                configured_logger.setLevel(previous_level)
+
+            run_with_reloader(worker.run)
+        else:
+            worker.configure_signals()
+            worker.run()
