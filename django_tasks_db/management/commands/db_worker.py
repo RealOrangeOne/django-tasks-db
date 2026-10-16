@@ -184,9 +184,6 @@ class Worker:
             # Setting the return and success value inside the error handling,
             # So errors setting it (eg JSON encode) can still be recorded
             db_task_result.set_successful(return_value)
-            task_finished.send(
-                sender=backend_type, task_result=db_task_result.task_result
-            )
         except BaseException as e:
             db_task_result.set_failed(e)
 
@@ -200,6 +197,12 @@ class Worker:
                     sender=sender,
                     task_result=task_result,
                 )
+        else:
+            # Sent outside of the error handling, so an exception from a receiver
+            # doesn't mark a task which has already run as failed.
+            task_finished.send(
+                sender=backend_type, task_result=db_task_result.task_result
+            )
         finally:
             self.running_task = False
             self._run_tasks += 1
