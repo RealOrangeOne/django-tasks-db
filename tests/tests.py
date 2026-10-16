@@ -554,6 +554,15 @@ class DatabaseBackendWorkerTestCase(TransactionTestCase):
         )
     )
 
+    def setUp(self) -> None:
+        super().setUp()
+        logger = logging.getLogger("django_tasks_db")
+        tasks_logger = logging.getLogger(LOGGER)
+        self.addCleanup(logger.setLevel, logger.level)
+        self.addCleanup(tasks_logger.setLevel, tasks_logger.level)
+        logger.setLevel(logging.NOTSET)
+        tasks_logger.setLevel(logging.NOTSET)
+
     def tearDown(self) -> None:
         logger = logging.getLogger("django_tasks_db")
         tasks_logger = logging.getLogger(LOGGER)
@@ -564,6 +573,96 @@ class DatabaseBackendWorkerTestCase(TransactionTestCase):
 
         for handler in tasks_logger.handlers:
             tasks_logger.removeHandler(handler)
+
+    def test_default_verbosity_preserves_explicit_logger_levels(self) -> None:
+        logger = logging.getLogger("django_tasks_db")
+        tasks_logger = logging.getLogger(LOGGER)
+        original_logger_level = logger.level
+        original_tasks_logger_level = tasks_logger.level
+        self.addCleanup(logger.setLevel, original_logger_level)
+        self.addCleanup(tasks_logger.setLevel, original_tasks_logger_level)
+
+        logger.setLevel(logging.WARNING)
+        tasks_logger.setLevel(logging.ERROR)
+
+        call_command(
+            "db_worker",
+            batch=True,
+            interval=0,
+            startup_delay=False,
+            worker_id=self.worker_id,
+        )
+
+        self.assertEqual(logger.level, logging.WARNING)
+        self.assertEqual(tasks_logger.level, logging.ERROR)
+
+    def test_default_verbosity_configures_inherited_logger_levels(self) -> None:
+        logger = logging.getLogger("django_tasks_db")
+        tasks_logger = logging.getLogger(LOGGER)
+
+        call_command(
+            "db_worker",
+            batch=True,
+            interval=0,
+            startup_delay=False,
+            worker_id=self.worker_id,
+        )
+
+        self.assertEqual(logger.level, logging.INFO)
+        self.assertEqual(tasks_logger.level, logging.INFO)
+
+    def test_explicit_verbosity_overrides_configured_logger_levels(self) -> None:
+        logger = logging.getLogger("django_tasks_db")
+        tasks_logger = logging.getLogger(LOGGER)
+        for verbosity, expected_level in (
+            (0, logging.CRITICAL),
+            (1, logging.INFO),
+            (2, logging.DEBUG),
+            (3, logging.DEBUG),
+        ):
+            with self.subTest(verbosity=verbosity):
+                logger.setLevel(logging.WARNING)
+                tasks_logger.setLevel(logging.ERROR)
+                call_command(
+                    "db_worker",
+                    "--verbosity",
+                    str(verbosity),
+                    batch=True,
+                    interval=0,
+                    startup_delay=False,
+                    worker_id=self.worker_id,
+                    stdout=StringIO(),
+                )
+                self.assertEqual(logger.level, expected_level)
+                self.assertEqual(tasks_logger.level, expected_level)
+
+    def test_verbosity_keyword_overrides_configured_logger_levels(self) -> None:
+        logger = logging.getLogger("django_tasks_db")
+        tasks_logger = logging.getLogger(LOGGER)
+        logger.setLevel(logging.WARNING)
+        tasks_logger.setLevel(logging.ERROR)
+
+        self.run_worker(verbosity=1, stdout=StringIO())
+
+        self.assertEqual(logger.level, logging.INFO)
+        self.assertEqual(tasks_logger.level, logging.INFO)
+
+    def test_default_verbosity_preserves_mixed_logger_levels(self) -> None:
+        logger = logging.getLogger("django_tasks_db")
+        tasks_logger = logging.getLogger(LOGGER)
+        logger.setLevel(logging.WARNING)
+
+        call_command(
+            "db_worker",
+            batch=True,
+            interval=0,
+            startup_delay=False,
+            worker_id=self.worker_id,
+            stdout=StringIO(),
+        )
+
+        self.assertEqual(logger.level, logging.WARNING)
+        self.assertEqual(tasks_logger.level, logging.INFO)
 
     def test_run_enqueued_task(self) -> None:
         for task in [
@@ -937,7 +1036,10 @@ class DatabaseBackendWorkerTestCase(TransactionTestCase):
         result = test_tasks.noop_task.enqueue()
 
         stdout = StringIO()
-        self.run_worker(verbosity=3, stdout=stdout, stderr=stdout)
+        # Let the command install its capture handler instead of using the
+        # console handler configured for Django's native tasks logger.
+        with mock.patch.object(logging.getLogger(LOGGER), "handlers", []):
+            self.run_worker(verbosity=3, stdout=stdout, stderr=stdout)
 
         self.assertEqual(
             stdout.getvalue().splitlines(),
