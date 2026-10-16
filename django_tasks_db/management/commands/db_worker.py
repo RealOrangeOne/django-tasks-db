@@ -209,9 +209,10 @@ def valid_backend_name(val: str) -> str:
     try:
         backend = task_backends[val]
     except InvalidTaskBackend as e:
-        raise ArgumentTypeError(e.args[0]) from e
-    if not isinstance(backend, DatabaseBackend):
-        raise ArgumentTypeError(f"Backend '{val}' is not a database backend")
+        raise ArgumentTypeError(str(e)) from e
+    else:
+        if not isinstance(backend, DatabaseBackend):
+            raise ArgumentTypeError(f"Backend '{val}' is not a database backend")
     return val
 
 
