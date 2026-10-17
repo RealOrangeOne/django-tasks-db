@@ -297,3 +297,27 @@ class DBTaskResult(GenericBase[P, T], models.Model):
                 "traceback",
             ]
         )
+
+
+class DBTaskPing(models.Model):
+    worker_id = models.CharField(_("worker id"), max_length=256)
+    queue_name = models.CharField(
+        _("queue name"), default=DEFAULT_TASK_QUEUE_NAME, max_length=32
+    )
+    backend_name = models.CharField(_("backend name"), max_length=32)
+    task_id = models.UUIDField()
+    pongs = models.IntegerField(_("responses"), default=0)
+
+    class Meta:
+        verbose_name = _("DB Worker Ping")
+        verbose_name_plural = _("DB Worker Pings")
+        constraints = (
+            models.UniqueConstraint(
+                fields=("worker_id", "queue_name", "backend_name", "task_id"),
+                name="unique_worker_task_ping",
+            ),
+        )
+        indexes = (
+            models.Index(fields=("task_id", "queue_name", "backend_name")),
+            models.Index(fields=("worker_id", "queue_name", "backend_name")),
+        )
