@@ -4,6 +4,7 @@ import os
 import random
 import signal
 import sys
+import threading
 import time
 from argparse import ArgumentParser, ArgumentTypeError, BooleanOptionalAction
 from types import FrameType
@@ -27,10 +28,12 @@ from django_tasks_db.compat import (
     task_finished,
     task_started,
 )
-from django_tasks_db.models import DBTaskResult
+from django_tasks_db.models import DBTaskResult, DBWorkerHeartbeat
 from django_tasks_db.utils import exclusive_transaction, is_locked_database_exception
 
 logger = logging.getLogger("django_tasks_db")
+
+DEFAULT_HEARTBEAT_INTERVAL = 30
 
 
 class Worker:
@@ -45,6 +48,7 @@ class Worker:
         max_tasks: int | None,
         worker_id: str,
         excluded_queue_names: list[str],
+        heartbeat_interval: float = DEFAULT_HEARTBEAT_INTERVAL,
     ):
         self.queue_names = queue_names
         self.process_all_queues = "*" in queue_names
@@ -54,10 +58,13 @@ class Worker:
         self.backend_name = backend_name
         self.startup_delay = startup_delay
         self.max_tasks = max_tasks
+        self.heartbeat_interval = heartbeat_interval
 
         self.running = True
         self.running_task = False
         self._run_tasks = 0
+        self._heartbeat_stop = threading.Event()
+        self._heartbeat_error: Exception | None = None
 
         self.worker_id = worker_id
 
@@ -99,11 +106,26 @@ class Worker:
             ",".join(self.queue_names),
         )
 
+        DBWorkerHeartbeat.objects.upsert(self.worker_id)
+        heartbeat_thread = threading.Thread(
+            target=self._update_heartbeat,
+            name=f"heartbeat-{self.worker_id}",
+            daemon=True,
+        )
+        heartbeat_thread.start()
+        try:
+            self._run_loop()
+        finally:
+            self._heartbeat_stop.set()
+            heartbeat_thread.join()
+
+    def _run_loop(self) -> None:
         if self.startup_delay and self.interval:
             # Add a random small delay before starting to avoid a thundering herd
             time.sleep(random.random())  # noqa: S311
 
         while self.running:
+            self._raise_heartbeat_error()
             # Check for dropped/expired connections right after waking up
             close_old_connections()
 
@@ -133,6 +155,7 @@ class Worker:
 
             if task_result is not None:
                 self.run_task(task_result)
+                self._raise_heartbeat_error()
 
             if self.batch and retrieved_task_result and task_result is None:
                 # If we're running in "batch" mode, terminate the loop (and thus the worker)
@@ -159,6 +182,25 @@ class Worker:
             if self.running and not task_result:
                 # Wait before checking for another task
                 time.sleep(self.interval)
+
+    def _update_heartbeat(self) -> None:
+        while not self._heartbeat_stop.wait(self.heartbeat_interval):
+            close_old_connections()
+            try:
+                DBWorkerHeartbeat.objects.upsert(self.worker_id)
+            except Exception as e:
+                self._heartbeat_error = e
+                self._heartbeat_stop.set()
+                logger.exception(
+                    "Failed to update heartbeat for worker_id=%s", self.worker_id
+                )
+                return
+            finally:
+                close_old_connections()
+
+    def _raise_heartbeat_error(self) -> None:
+        if self._heartbeat_error is not None:
+            raise self._heartbeat_error
 
     def run_task(self, db_task_result: DBTaskResult) -> None:
         """
@@ -227,6 +269,13 @@ def valid_interval(val: str) -> float:
     return num
 
 
+def valid_heartbeat_interval(val: str) -> float:
+    num = valid_interval(val)
+    if num == 0:
+        raise ArgumentTypeError("Must be greater than zero")
+    return num
+
+
 def valid_max_tasks(val: str) -> int:
     num = int(val)
     if num <= 0:
@@ -268,6 +317,13 @@ class Command(BaseCommand):
             default=1,
             type=valid_interval,
             help="The interval (in seconds) to wait, when there are no tasks in the queue, before checking for tasks again (default: %(default)r)",
+        )
+        parser.add_argument(
+            "--heartbeat-interval",
+            nargs="?",
+            default=DEFAULT_HEARTBEAT_INTERVAL,
+            type=valid_heartbeat_interval,
+            help="The interval (in seconds) between worker heartbeat updates (default: %(default)r)",
         )
         parser.add_argument(
             "--batch",
@@ -344,6 +400,7 @@ class Command(BaseCommand):
         max_tasks: int | None,
         worker_id: str,
         exclude_queues: str,
+        heartbeat_interval: float,
         **options: dict,
     ) -> None:
         self.configure_logging(verbosity)
@@ -369,6 +426,7 @@ class Command(BaseCommand):
             max_tasks=max_tasks,
             worker_id=worker_id,
             excluded_queue_names=excluded_queue_names,
+            heartbeat_interval=heartbeat_interval,
         )
 
         if reload:

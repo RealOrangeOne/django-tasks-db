@@ -300,6 +300,7 @@ class DBTaskResult(GenericBase[P, T], models.Model):
 
 
 class DBWorkerHeartbeatManager(models.Manager["DBWorkerHeartbeat"]):
+    @retry()
     def upsert(self, worker_id: str) -> tuple["DBWorkerHeartbeat", bool]:
         return self.update_or_create(
             worker_id=worker_id,

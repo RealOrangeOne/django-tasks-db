@@ -47,6 +47,8 @@ You can run the `db_worker` command to run tasks as they're created. Check the `
 
 In `DEBUG`, the worker will automatically reload when code is changed (or by using `--reload`). This is not recommended in production environments as tasks may not be stopped cleanly.
 
+Workers record a heartbeat on startup and refresh it every 30 seconds by default. Use `--heartbeat-interval` to change the refresh interval.
+
 ### Pruning old tasks
 
 After a while, tasks may start to build up in your database. This can be managed using the `prune_db_task_results` management command, which deletes completed tasks according to the given retention policy. Check the `--help` for the available options.
