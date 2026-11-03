@@ -7,6 +7,9 @@ import sys
 import threading
 import time
 from argparse import ArgumentParser, ArgumentTypeError, BooleanOptionalAction
+from datetime import timedelta
+from http import HTTPStatus
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from types import FrameType
 
 from django.conf import settings
@@ -14,6 +17,7 @@ from django.core.exceptions import SuspiciousOperation
 from django.core.management.base import BaseCommand, CommandError
 from django.db import close_old_connections
 from django.db.utils import OperationalError
+from django.utils import timezone
 from django.utils.autoreload import DJANGO_AUTORELOAD_ENV, run_with_reloader
 from django.utils.crypto import get_random_string
 
@@ -34,6 +38,8 @@ from django_tasks_db.utils import exclusive_transaction, is_locked_database_exce
 logger = logging.getLogger("django_tasks_db")
 
 DEFAULT_HEARTBEAT_INTERVAL = 30
+DEFAULT_HEALTHCHECK_ADDRESS = "127.0.0.1"
+DEFAULT_HEALTHCHECK_PORT = 8000
 
 
 class Worker:
@@ -49,6 +55,9 @@ class Worker:
         worker_id: str,
         excluded_queue_names: list[str],
         heartbeat_interval: float = DEFAULT_HEARTBEAT_INTERVAL,
+        healthcheck: bool = False,
+        healthcheck_address: str = DEFAULT_HEALTHCHECK_ADDRESS,
+        healthcheck_port: int = DEFAULT_HEALTHCHECK_PORT,
     ):
         self.queue_names = queue_names
         self.process_all_queues = "*" in queue_names
@@ -59,6 +68,9 @@ class Worker:
         self.startup_delay = startup_delay
         self.max_tasks = max_tasks
         self.heartbeat_interval = heartbeat_interval
+        self.healthcheck = healthcheck
+        self.healthcheck_address = healthcheck_address
+        self.healthcheck_port = healthcheck_port
 
         self.running = True
         self.running_task = False
@@ -113,11 +125,82 @@ class Worker:
             daemon=True,
         )
         heartbeat_thread.start()
+        healthcheck_server: ThreadingHTTPServer | None = None
+        healthcheck_thread: threading.Thread | None = None
         try:
+            if self.healthcheck:
+                healthcheck_server, healthcheck_thread = (
+                    self._start_healthcheck_server()
+                )
             self._run_loop()
         finally:
+            if healthcheck_server is not None and healthcheck_thread is not None:
+                healthcheck_server.shutdown()
+                healthcheck_server.server_close()
+                healthcheck_thread.join()
             self._heartbeat_stop.set()
             heartbeat_thread.join()
+
+    def _start_healthcheck_server(
+        self,
+    ) -> tuple[ThreadingHTTPServer, threading.Thread]:
+        worker = self
+
+        class HealthcheckHandler(BaseHTTPRequestHandler):
+            def do_GET(self) -> None:
+                if self.path != "/health":
+                    self.send_error(HTTPStatus.NOT_FOUND)
+                    return
+
+                if worker._is_healthy():
+                    status = HTTPStatus.OK
+                    body = b"healthy\n"
+                else:
+                    status = HTTPStatus.SERVICE_UNAVAILABLE
+                    body = b"unhealthy\n"
+
+                self.send_response(status)
+                self.send_header("Content-Type", "text/plain; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, format_string: str, *args: object) -> None:
+                logger.debug("Healthcheck request: " + format_string, *args)
+
+        server = ThreadingHTTPServer(
+            (self.healthcheck_address, self.healthcheck_port),
+            HealthcheckHandler,
+        )
+        server.daemon_threads = True
+        thread = threading.Thread(
+            target=server.serve_forever,
+            name=f"healthcheck-{self.worker_id}",
+            daemon=True,
+        )
+        thread.start()
+        logger.info(
+            "Started healthcheck listener worker_id=%s address=%s port=%s",
+            self.worker_id,
+            *server.server_address[:2],
+        )
+        return server, thread
+
+    def _is_healthy(self) -> bool:
+        close_old_connections()
+        try:
+            cutoff = timezone.now() - timedelta(seconds=2 * self.heartbeat_interval)
+            return DBWorkerHeartbeat.objects.filter(
+                worker_id=self.worker_id,
+                last_heartbeat_at__gte=cutoff,
+            ).exists()
+        except Exception:
+            logger.exception(
+                "Failed to check heartbeat for worker_id=%s", self.worker_id
+            )
+            return False
+        finally:
+            close_old_connections()
 
     def _run_loop(self) -> None:
         if self.startup_delay and self.interval:
@@ -276,6 +359,16 @@ def valid_heartbeat_interval(val: str) -> float:
     return num
 
 
+def valid_healthcheck_port(val: str) -> int:
+    try:
+        port = int(val)
+    except ValueError as e:
+        raise ArgumentTypeError("Must be an integer port number") from e
+    if not 0 <= port <= 65535:
+        raise ArgumentTypeError("Must be between 0 and 65535")
+    return port
+
+
 def valid_max_tasks(val: str) -> int:
     num = int(val)
     if num <= 0:
@@ -324,6 +417,22 @@ class Command(BaseCommand):
             default=DEFAULT_HEARTBEAT_INTERVAL,
             type=valid_heartbeat_interval,
             help="The interval (in seconds) between worker heartbeat updates (default: %(default)r)",
+        )
+        parser.add_argument(
+            "--healthcheck",
+            action="store_true",
+            help="Start an HTTP healthcheck listener.",
+        )
+        parser.add_argument(
+            "--healthcheck-address",
+            default=DEFAULT_HEALTHCHECK_ADDRESS,
+            help="Address for the healthcheck listener (default: %(default)s).",
+        )
+        parser.add_argument(
+            "--healthcheck-port",
+            type=valid_healthcheck_port,
+            default=DEFAULT_HEALTHCHECK_PORT,
+            help="Port for the healthcheck listener (default: %(default)s).",
         )
         parser.add_argument(
             "--batch",
@@ -401,6 +510,9 @@ class Command(BaseCommand):
         worker_id: str,
         exclude_queues: str,
         heartbeat_interval: float,
+        healthcheck: bool,
+        healthcheck_address: str,
+        healthcheck_port: int,
         **options: dict,
     ) -> None:
         self.configure_logging(verbosity)
@@ -427,6 +539,9 @@ class Command(BaseCommand):
             worker_id=worker_id,
             excluded_queue_names=excluded_queue_names,
             heartbeat_interval=heartbeat_interval,
+            healthcheck=healthcheck,
+            healthcheck_address=healthcheck_address,
+            healthcheck_port=healthcheck_port,
         )
 
         if reload:

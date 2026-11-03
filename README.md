@@ -49,6 +49,8 @@ In `DEBUG`, the worker will automatically reload when code is changed (or by usi
 
 Workers record a heartbeat on startup and refresh it every 30 seconds by default. Use `--heartbeat-interval` to change the refresh interval.
 
+Start an HTTP healthcheck listener with `--healthcheck`. It serves `GET /health`, returning HTTP 200 while the worker heartbeat is current or HTTP 503 when it is missing or older than twice the heartbeat interval. The listener binds to `127.0.0.1:8000` by default; configure it with `--healthcheck-address` and `--healthcheck-port`.
+
 ### Pruning old tasks
 
 After a while, tasks may start to build up in your database. This can be managed using the `prune_db_task_results` management command, which deletes completed tasks according to the given retention policy. Check the `--help` for the available options.

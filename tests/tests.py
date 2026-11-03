@@ -13,6 +13,7 @@ from collections.abc import Iterator, Sequence
 from contextlib import redirect_stderr
 from datetime import datetime, timedelta
 from functools import partial
+from http.client import HTTPConnection
 from io import StringIO
 from typing import Any, cast
 from unittest import mock, skipIf
@@ -62,6 +63,7 @@ except (ImportError, ModuleNotFoundError):
 
 from django_tasks_db import DatabaseBackend, compat
 from django_tasks_db.admin import DBTaskResultAdmin
+from django_tasks_db.management.commands.db_worker import Worker
 from django_tasks_db.management.commands.prune_db_task_results import (
     logger as prune_db_tasks_logger,
 )
@@ -530,7 +532,7 @@ class DatabaseBackendTestCase(TransactionTestCase):
             test_tasks.noop_task.enqueue()
 
 
-class DBWorkerHeartbeatTestCase(TestCase):
+class DBWorkerHeartbeatTestCase(TransactionTestCase):
     def test_upsert_creates_then_updates_heartbeat(self) -> None:
         first_timestamp = timezone.now()
         second_timestamp = first_timestamp + timedelta(seconds=1)
@@ -570,6 +572,54 @@ class DBWorkerHeartbeatTestCase(TestCase):
         self.assertEqual(heartbeat.worker_id, "worker-1")
         self.assertEqual(updated_heartbeat.worker_id, "worker-1")
         self.assertEqual(updated_heartbeat.last_heartbeat_at, second_timestamp)
+
+    def test_healthcheck_reports_fresh_and_stale_heartbeats(self) -> None:
+        worker_id = "healthcheck-worker"
+        DBWorkerHeartbeat.objects.upsert(worker_id)
+        worker = Worker(
+            queue_names=["default"],
+            interval=0,
+            batch=False,
+            backend_name="default",
+            startup_delay=False,
+            max_tasks=None,
+            worker_id=worker_id,
+            excluded_queue_names=[],
+            heartbeat_interval=0.1,
+            healthcheck=True,
+            healthcheck_address="127.0.0.1",
+            healthcheck_port=0,
+        )
+        server, thread = worker._start_healthcheck_server()
+
+        def shutdown_server() -> None:
+            server.shutdown()
+            server.server_close()
+            thread.join()
+
+        self.addCleanup(shutdown_server)
+        address, port = str(server.server_address[0]), int(server.server_address[1])
+
+        connection = HTTPConnection(address, port, timeout=2)
+        try:
+            connection.request("GET", "/health")
+            response = connection.getresponse()
+            self.assertEqual(response.status, 200)
+            self.assertEqual(response.read(), b"healthy\n")
+
+            DBWorkerHeartbeat.objects.filter(worker_id=worker_id).update(
+                last_heartbeat_at=timezone.now() - timedelta(seconds=1)
+            )
+            connection.request("GET", "/health")
+            response = connection.getresponse()
+            self.assertEqual(response.status, 503)
+            self.assertEqual(response.read(), b"unhealthy\n")
+
+            connection.request("GET", "/")
+            response = connection.getresponse()
+            self.assertEqual(response.status, 404)
+        finally:
+            connection.close()
 
 
 @override_settings(
@@ -1003,6 +1053,37 @@ class DatabaseBackendWorkerTestCase(TransactionTestCase):
             )
 
         self.assertEqual(worker_class.mock_calls[0].kwargs["heartbeat_interval"], 0.1)
+
+    def test_healthcheck_listener_options(self) -> None:
+        with mock.patch(
+            "django_tasks_db.management.commands.db_worker.Worker"
+        ) as worker_class:
+            execute_from_command_line(
+                [
+                    "django-admin",
+                    "db_worker",
+                    "--healthcheck",
+                    "--healthcheck-address",
+                    "127.0.0.2",
+                    "--healthcheck-port",
+                    "8123",
+                ]
+            )
+
+        self.assertTrue(worker_class.mock_calls[0].kwargs["healthcheck"])
+        self.assertEqual(
+            worker_class.mock_calls[0].kwargs["healthcheck_address"], "127.0.0.2"
+        )
+        self.assertEqual(worker_class.mock_calls[0].kwargs["healthcheck_port"], 8123)
+
+    def test_invalid_healthcheck_port(self) -> None:
+        output = StringIO()
+        with redirect_stderr(output):
+            with self.assertRaises(SystemExit):
+                execute_from_command_line(
+                    ["django-admin", "db_worker", "--healthcheck-port", "65536"]
+                )
+        self.assertIn("Must be between 0 and 65535", output.getvalue())
 
     def test_zero_heartbeat_interval(self) -> None:
         output = StringIO()
