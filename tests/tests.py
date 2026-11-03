@@ -1,5 +1,6 @@
 import contextlib
 import copy
+import json
 import logging
 import os
 import signal
@@ -541,9 +542,11 @@ class DBWorkerHeartbeatTestCase(TransactionTestCase):
             "django_tasks_db.models.timezone.now",
             side_effect=[first_timestamp, second_timestamp],
         ):
-            heartbeat, created = DBWorkerHeartbeat.objects.upsert("worker-1")
+            heartbeat, created = DBWorkerHeartbeat.objects.upsert(
+                "worker-1", processed_tasks=2
+            )
             updated_heartbeat, updated_created = DBWorkerHeartbeat.objects.upsert(
-                "worker-1"
+                "worker-1", processed_tasks=5
             )
 
         self.assertTrue(created)
@@ -551,6 +554,7 @@ class DBWorkerHeartbeatTestCase(TransactionTestCase):
         self.assertEqual(heartbeat.worker_id, "worker-1")
         self.assertEqual(updated_heartbeat.worker_id, "worker-1")
         self.assertEqual(updated_heartbeat.last_heartbeat_at, second_timestamp)
+        self.assertEqual(updated_heartbeat.processed_tasks, 5)
         self.assertEqual(DBWorkerHeartbeat.objects.count(), 1)
 
     async def test_aupsert_creates_then_updates_heartbeat(self) -> None:
@@ -561,21 +565,24 @@ class DBWorkerHeartbeatTestCase(TransactionTestCase):
             "django_tasks_db.models.timezone.now",
             side_effect=[first_timestamp, second_timestamp],
         ):
-            heartbeat, created = await DBWorkerHeartbeat.objects.aupsert("worker-1")
+            heartbeat, created = await DBWorkerHeartbeat.objects.aupsert(
+                "worker-1", processed_tasks=2
+            )
             (
                 updated_heartbeat,
                 updated_created,
-            ) = await DBWorkerHeartbeat.objects.aupsert("worker-1")
+            ) = await DBWorkerHeartbeat.objects.aupsert("worker-1", processed_tasks=5)
 
         self.assertTrue(created)
         self.assertFalse(updated_created)
         self.assertEqual(heartbeat.worker_id, "worker-1")
         self.assertEqual(updated_heartbeat.worker_id, "worker-1")
         self.assertEqual(updated_heartbeat.last_heartbeat_at, second_timestamp)
+        self.assertEqual(updated_heartbeat.processed_tasks, 5)
 
     def test_healthcheck_reports_fresh_and_stale_heartbeats(self) -> None:
         worker_id = "healthcheck-worker"
-        DBWorkerHeartbeat.objects.upsert(worker_id)
+        DBWorkerHeartbeat.objects.upsert(worker_id, processed_tasks=3)
         worker = Worker(
             queue_names=["default"],
             interval=0,
@@ -605,7 +612,17 @@ class DBWorkerHeartbeatTestCase(TransactionTestCase):
             connection.request("GET", "/health")
             response = connection.getresponse()
             self.assertEqual(response.status, 200)
-            self.assertEqual(response.read(), b"healthy\n")
+            self.assertEqual(response.getheader("Content-Type"), "application/json")
+            health = json.loads(response.read())
+            self.assertTrue(health["healthy"])
+            self.assertEqual(health["heartbeat_interval"], 0.1)
+            self.assertEqual(health["processed_tasks"], 3)
+            self.assertEqual(
+                health["last_heartbeat_at"],
+                DBWorkerHeartbeat.objects.get(
+                    worker_id=worker_id
+                ).last_heartbeat_at.isoformat(),
+            )
 
             DBWorkerHeartbeat.objects.filter(worker_id=worker_id).update(
                 last_heartbeat_at=timezone.now() - timedelta(seconds=1)
@@ -613,7 +630,10 @@ class DBWorkerHeartbeatTestCase(TransactionTestCase):
             connection.request("GET", "/health")
             response = connection.getresponse()
             self.assertEqual(response.status, 503)
-            self.assertEqual(response.read(), b"unhealthy\n")
+            health = json.loads(response.read())
+            self.assertFalse(health["healthy"])
+            self.assertEqual(health["heartbeat_interval"], 0.1)
+            self.assertEqual(health["processed_tasks"], 3)
 
             connection.request("GET", "/")
             response = connection.getresponse()
@@ -767,7 +787,7 @@ class DatabaseBackendWorkerTestCase(TransactionTestCase):
 
                 self.assertEqual(result.status, TaskResultStatus.READY)
 
-                with self.assertNumQueries(16 if connection.vendor == "mysql" else 14):
+                with self.assertNumQueries(20 if connection.vendor == "mysql" else 18):
                     self.run_worker()
 
                 self.assertEqual(result.status, TaskResultStatus.READY)
@@ -790,7 +810,7 @@ class DatabaseBackendWorkerTestCase(TransactionTestCase):
 
         self.assertEqual(DBTaskResult.objects.ready().count(), 4)
 
-        with self.assertNumQueries(34 if connection.vendor == "mysql" else 29):
+        with self.assertNumQueries(50 if connection.vendor == "mysql" else 45):
             self.run_worker()
 
         self.assertEqual(DBTaskResult.objects.ready().count(), 0)
@@ -817,7 +837,11 @@ class DatabaseBackendWorkerTestCase(TransactionTestCase):
 
         heartbeat = DBWorkerHeartbeat.objects.get(worker_id=worker_id)
         task_result.refresh()
-        self.assertGreater(heartbeat.last_heartbeat_at, task_result.started_at)
+        started_at = task_result.started_at
+        if started_at is None:
+            self.fail("Task did not start")
+        self.assertGreater(heartbeat.last_heartbeat_at, started_at)
+        self.assertEqual(heartbeat.processed_tasks, 1)
         self.assertEqual(task_result.status, TaskResultStatus.SUCCESSFUL)
 
     def test_doesnt_process_different_queue(self) -> None:
@@ -830,7 +854,7 @@ class DatabaseBackendWorkerTestCase(TransactionTestCase):
 
         self.assertEqual(DBTaskResult.objects.ready().count(), 1)
 
-        with self.assertNumQueries(14 if connection.vendor == "mysql" else 12):
+        with self.assertNumQueries(18 if connection.vendor == "mysql" else 16):
             self.run_worker(queue_name=result.task.queue_name)
 
         self.assertEqual(DBTaskResult.objects.ready().count(), 0)
@@ -845,7 +869,7 @@ class DatabaseBackendWorkerTestCase(TransactionTestCase):
 
         self.assertEqual(DBTaskResult.objects.ready().count(), 1)
 
-        with self.assertNumQueries(14 if connection.vendor == "mysql" else 12):
+        with self.assertNumQueries(18 if connection.vendor == "mysql" else 16):
             self.run_worker(queue_name="*")
 
         self.assertEqual(DBTaskResult.objects.ready().count(), 0)
@@ -891,7 +915,7 @@ class DatabaseBackendWorkerTestCase(TransactionTestCase):
         result = test_tasks.failing_task_value_error.enqueue()
         self.assertEqual(DBTaskResult.objects.ready().count(), 1)
 
-        with self.assertNumQueries(16 if connection.vendor == "mysql" else 14):
+        with self.assertNumQueries(20 if connection.vendor == "mysql" else 18):
             self.run_worker()
 
         self.assertEqual(result.status, TaskResultStatus.READY)
@@ -943,7 +967,7 @@ class DatabaseBackendWorkerTestCase(TransactionTestCase):
         result = test_tasks.complex_exception.enqueue()
         self.assertEqual(DBTaskResult.objects.ready().count(), 1)
 
-        with self.assertNumQueries(16 if connection.vendor == "mysql" else 14):
+        with self.assertNumQueries(20 if connection.vendor == "mysql" else 18):
             self.run_worker()
 
         self.assertEqual(result.status, TaskResultStatus.READY)
@@ -993,7 +1017,7 @@ class DatabaseBackendWorkerTestCase(TransactionTestCase):
 
         self.assertEqual(DBTaskResult.objects.ready().count(), 1)
 
-        with self.assertNumQueries(14 if connection.vendor == "mysql" else 12):
+        with self.assertNumQueries(18 if connection.vendor == "mysql" else 16):
             self.run_worker(backend_name=result.backend)
 
         self.assertEqual(DBTaskResult.objects.ready().count(), 0)
@@ -1159,7 +1183,7 @@ class DatabaseBackendWorkerTestCase(TransactionTestCase):
 
         self.assertEqual(DBTaskResult.objects.ready().count(), 1)
 
-        with self.assertNumQueries(14 if connection.vendor == "mysql" else 12):
+        with self.assertNumQueries(18 if connection.vendor == "mysql" else 16):
             self.run_worker()
 
         self.assertEqual(DBTaskResult.objects.ready().count(), 0)

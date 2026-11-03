@@ -301,16 +301,26 @@ class DBTaskResult(GenericBase[P, T], models.Model):
 
 class DBWorkerHeartbeatManager(models.Manager["DBWorkerHeartbeat"]):
     @retry()
-    def upsert(self, worker_id: str) -> tuple["DBWorkerHeartbeat", bool]:
+    def upsert(
+        self, worker_id: str, processed_tasks: int = 0
+    ) -> tuple["DBWorkerHeartbeat", bool]:
         return self.update_or_create(
             worker_id=worker_id,
-            defaults={"last_heartbeat_at": timezone.now()},
+            defaults={
+                "last_heartbeat_at": timezone.now(),
+                "processed_tasks": processed_tasks,
+            },
         )
 
-    async def aupsert(self, worker_id: str) -> tuple["DBWorkerHeartbeat", bool]:
+    async def aupsert(
+        self, worker_id: str, processed_tasks: int = 0
+    ) -> tuple["DBWorkerHeartbeat", bool]:
         return await self.aupdate_or_create(
             worker_id=worker_id,
-            defaults={"last_heartbeat_at": timezone.now()},
+            defaults={
+                "last_heartbeat_at": timezone.now(),
+                "processed_tasks": processed_tasks,
+            },
         )
 
 
@@ -319,6 +329,7 @@ class DBWorkerHeartbeat(models.Model):
     last_heartbeat_at = models.DateTimeField(
         _("last heartbeat at"), default=timezone.now
     )
+    processed_tasks = models.PositiveIntegerField(_("processed tasks"), default=0)
 
     objects = DBWorkerHeartbeatManager()
 

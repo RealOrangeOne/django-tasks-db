@@ -1,3 +1,4 @@
+import json
 import logging
 import math
 import os
@@ -76,6 +77,7 @@ class Worker:
         self.running_task = False
         self._run_tasks = 0
         self._heartbeat_stop = threading.Event()
+        self._heartbeat_lock = threading.Lock()
         self._heartbeat_error: Exception | None = None
 
         self.worker_id = worker_id
@@ -118,7 +120,7 @@ class Worker:
             ",".join(self.queue_names),
         )
 
-        DBWorkerHeartbeat.objects.upsert(self.worker_id)
+        self._save_heartbeat()
         heartbeat_thread = threading.Thread(
             target=self._update_heartbeat,
             name=f"heartbeat-{self.worker_id}",
@@ -152,15 +154,12 @@ class Worker:
                     self.send_error(HTTPStatus.NOT_FOUND)
                     return
 
-                if worker._is_healthy():
-                    status = HTTPStatus.OK
-                    body = b"healthy\n"
-                else:
-                    status = HTTPStatus.SERVICE_UNAVAILABLE
-                    body = b"unhealthy\n"
+                health_status, healthy = worker._get_healthcheck_status()
+                status = HTTPStatus.OK if healthy else HTTPStatus.SERVICE_UNAVAILABLE
+                body = json.dumps(health_status).encode("utf-8")
 
                 self.send_response(status)
-                self.send_header("Content-Type", "text/plain; charset=utf-8")
+                self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
                 self.wfile.write(body)
@@ -186,19 +185,36 @@ class Worker:
         )
         return server, thread
 
-    def _is_healthy(self) -> bool:
+    def _get_healthcheck_status(
+        self,
+    ) -> tuple[dict[str, bool | float | int | str | None], bool]:
         close_old_connections()
+        status: dict[str, bool | float | int | str | None] = {
+            "healthy": False,
+            "last_heartbeat_at": None,
+            "heartbeat_interval": self.heartbeat_interval,
+            "processed_tasks": None,
+        }
         try:
-            cutoff = timezone.now() - timedelta(seconds=2 * self.heartbeat_interval)
-            return DBWorkerHeartbeat.objects.filter(
+            heartbeat = DBWorkerHeartbeat.objects.filter(
                 worker_id=self.worker_id,
-                last_heartbeat_at__gte=cutoff,
-            ).exists()
+            ).first()
+            if heartbeat is None:
+                return status, False
+
+            cutoff = timezone.now() - timedelta(seconds=2 * self.heartbeat_interval)
+            healthy = heartbeat.last_heartbeat_at >= cutoff
+            status.update(
+                healthy=healthy,
+                last_heartbeat_at=heartbeat.last_heartbeat_at.isoformat(),
+                processed_tasks=heartbeat.processed_tasks,
+            )
+            return status, healthy
         except Exception:
             logger.exception(
                 "Failed to check heartbeat for worker_id=%s", self.worker_id
             )
-            return False
+            return status, False
         finally:
             close_old_connections()
 
@@ -238,6 +254,7 @@ class Worker:
 
             if task_result is not None:
                 self.run_task(task_result)
+                self._save_heartbeat()
                 self._raise_heartbeat_error()
 
             if self.batch and retrieved_task_result and task_result is None:
@@ -266,11 +283,15 @@ class Worker:
                 # Wait before checking for another task
                 time.sleep(self.interval)
 
+    def _save_heartbeat(self) -> None:
+        with self._heartbeat_lock:
+            DBWorkerHeartbeat.objects.upsert(self.worker_id, self._run_tasks)
+
     def _update_heartbeat(self) -> None:
         while not self._heartbeat_stop.wait(self.heartbeat_interval):
             close_old_connections()
             try:
-                DBWorkerHeartbeat.objects.upsert(self.worker_id)
+                self._save_heartbeat()
             except Exception as e:
                 self._heartbeat_error = e
                 self._heartbeat_stop.set()
