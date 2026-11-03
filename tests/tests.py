@@ -65,7 +65,7 @@ from django_tasks_db.admin import DBTaskResultAdmin
 from django_tasks_db.management.commands.prune_db_task_results import (
     logger as prune_db_tasks_logger,
 )
-from django_tasks_db.models import DBTaskResult, get_date_max
+from django_tasks_db.models import DBTaskResult, DBWorkerHeartbeat, get_date_max
 from django_tasks_db.utils import (
     exclusive_transaction,
     normalize_uuid,
@@ -528,6 +528,48 @@ class DatabaseBackendTestCase(TransactionTestCase):
             "id_function cannot be a database expression until Django 6.0",
         ):
             test_tasks.noop_task.enqueue()
+
+
+class DBWorkerHeartbeatTestCase(TestCase):
+    def test_upsert_creates_then_updates_heartbeat(self) -> None:
+        first_timestamp = timezone.now()
+        second_timestamp = first_timestamp + timedelta(seconds=1)
+
+        with mock.patch(
+            "django_tasks_db.models.timezone.now",
+            side_effect=[first_timestamp, second_timestamp],
+        ):
+            heartbeat, created = DBWorkerHeartbeat.objects.upsert("worker-1")
+            updated_heartbeat, updated_created = DBWorkerHeartbeat.objects.upsert(
+                "worker-1"
+            )
+
+        self.assertTrue(created)
+        self.assertFalse(updated_created)
+        self.assertEqual(heartbeat.worker_id, "worker-1")
+        self.assertEqual(updated_heartbeat.worker_id, "worker-1")
+        self.assertEqual(updated_heartbeat.last_heartbeat_at, second_timestamp)
+        self.assertEqual(DBWorkerHeartbeat.objects.count(), 1)
+
+    async def test_aupsert_creates_then_updates_heartbeat(self) -> None:
+        first_timestamp = timezone.now()
+        second_timestamp = first_timestamp + timedelta(seconds=1)
+
+        with mock.patch(
+            "django_tasks_db.models.timezone.now",
+            side_effect=[first_timestamp, second_timestamp],
+        ):
+            heartbeat, created = await DBWorkerHeartbeat.objects.aupsert("worker-1")
+            (
+                updated_heartbeat,
+                updated_created,
+            ) = await DBWorkerHeartbeat.objects.aupsert("worker-1")
+
+        self.assertTrue(created)
+        self.assertFalse(updated_created)
+        self.assertEqual(heartbeat.worker_id, "worker-1")
+        self.assertEqual(updated_heartbeat.worker_id, "worker-1")
+        self.assertEqual(updated_heartbeat.last_heartbeat_at, second_timestamp)
 
 
 @override_settings(

@@ -297,3 +297,30 @@ class DBTaskResult(GenericBase[P, T], models.Model):
                 "traceback",
             ]
         )
+
+
+class DBWorkerHeartbeatManager(models.Manager["DBWorkerHeartbeat"]):
+    def upsert(self, worker_id: str) -> tuple["DBWorkerHeartbeat", bool]:
+        return self.update_or_create(
+            worker_id=worker_id,
+            defaults={"last_heartbeat_at": timezone.now()},
+        )
+
+    async def aupsert(self, worker_id: str) -> tuple["DBWorkerHeartbeat", bool]:
+        return await self.aupdate_or_create(
+            worker_id=worker_id,
+            defaults={"last_heartbeat_at": timezone.now()},
+        )
+
+
+class DBWorkerHeartbeat(models.Model):
+    worker_id = models.CharField(_("worker id"), max_length=64, primary_key=True)
+    last_heartbeat_at = models.DateTimeField(
+        _("last heartbeat at"), default=timezone.now
+    )
+
+    objects = DBWorkerHeartbeatManager()
+
+    class Meta:
+        verbose_name = _("Worker Heartbeat")
+        verbose_name_plural = _("Worker Heartbeats")
