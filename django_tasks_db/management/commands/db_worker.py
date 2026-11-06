@@ -77,7 +77,6 @@ class Worker:
         self.running_task = False
         self._run_tasks = 0
         self._heartbeat_stop = threading.Event()
-        self._heartbeat_lock = threading.Lock()
         self._heartbeat_error: Exception | None = None
 
         self.worker_id = worker_id
@@ -254,7 +253,6 @@ class Worker:
 
             if task_result is not None:
                 self.run_task(task_result)
-                self._save_heartbeat()
                 self._raise_heartbeat_error()
 
             if self.batch and retrieved_task_result and task_result is None:
@@ -284,11 +282,11 @@ class Worker:
                 time.sleep(self.interval)
 
     def _save_heartbeat(self) -> None:
-        with self._heartbeat_lock:
-            DBWorkerHeartbeat.objects.upsert(self.worker_id, self._run_tasks)
+        DBWorkerHeartbeat.objects.upsert(self.worker_id, self._run_tasks)
 
     def _update_heartbeat(self) -> None:
-        while not self._heartbeat_stop.wait(self.heartbeat_interval):
+        while True:
+            stopping = self._heartbeat_stop.wait(self.heartbeat_interval)
             close_old_connections()
             try:
                 self._save_heartbeat()
@@ -301,6 +299,8 @@ class Worker:
                 return
             finally:
                 close_old_connections()
+            if stopping:
+                return
 
     def _raise_heartbeat_error(self) -> None:
         if self._heartbeat_error is not None:

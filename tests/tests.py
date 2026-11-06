@@ -787,7 +787,7 @@ class DatabaseBackendWorkerTestCase(TransactionTestCase):
 
                 self.assertEqual(result.status, TaskResultStatus.READY)
 
-                with self.assertNumQueries(20 if connection.vendor == "mysql" else 18):
+                with self.assertNumQueries(16 if connection.vendor == "mysql" else 14):
                     self.run_worker()
 
                 self.assertEqual(result.status, TaskResultStatus.READY)
@@ -810,7 +810,7 @@ class DatabaseBackendWorkerTestCase(TransactionTestCase):
 
         self.assertEqual(DBTaskResult.objects.ready().count(), 4)
 
-        with self.assertNumQueries(50 if connection.vendor == "mysql" else 45):
+        with self.assertNumQueries(34 if connection.vendor == "mysql" else 29):
             self.run_worker()
 
         self.assertEqual(DBTaskResult.objects.ready().count(), 0)
@@ -822,8 +822,9 @@ class DatabaseBackendWorkerTestCase(TransactionTestCase):
             self.run_worker()
 
     def test_heartbeat_updates_during_task(self) -> None:
+        # TODO: test has race condition on sqlite and postgres
         worker_id = get_random_string(32)
-        task_result = test_tasks.sleep_for.enqueue(0.1)
+        task_result = test_tasks.sleep_for.enqueue(1)
 
         call_command(
             "db_worker",
@@ -854,7 +855,7 @@ class DatabaseBackendWorkerTestCase(TransactionTestCase):
 
         self.assertEqual(DBTaskResult.objects.ready().count(), 1)
 
-        with self.assertNumQueries(18 if connection.vendor == "mysql" else 16):
+        with self.assertNumQueries(14 if connection.vendor == "mysql" else 12):
             self.run_worker(queue_name=result.task.queue_name)
 
         self.assertEqual(DBTaskResult.objects.ready().count(), 0)
@@ -869,7 +870,7 @@ class DatabaseBackendWorkerTestCase(TransactionTestCase):
 
         self.assertEqual(DBTaskResult.objects.ready().count(), 1)
 
-        with self.assertNumQueries(18 if connection.vendor == "mysql" else 16):
+        with self.assertNumQueries(14 if connection.vendor == "mysql" else 12):
             self.run_worker(queue_name="*")
 
         self.assertEqual(DBTaskResult.objects.ready().count(), 0)
@@ -915,7 +916,7 @@ class DatabaseBackendWorkerTestCase(TransactionTestCase):
         result = test_tasks.failing_task_value_error.enqueue()
         self.assertEqual(DBTaskResult.objects.ready().count(), 1)
 
-        with self.assertNumQueries(20 if connection.vendor == "mysql" else 18):
+        with self.assertNumQueries(16 if connection.vendor == "mysql" else 14):
             self.run_worker()
 
         self.assertEqual(result.status, TaskResultStatus.READY)
@@ -967,7 +968,7 @@ class DatabaseBackendWorkerTestCase(TransactionTestCase):
         result = test_tasks.complex_exception.enqueue()
         self.assertEqual(DBTaskResult.objects.ready().count(), 1)
 
-        with self.assertNumQueries(20 if connection.vendor == "mysql" else 18):
+        with self.assertNumQueries(16 if connection.vendor == "mysql" else 14):
             self.run_worker()
 
         self.assertEqual(result.status, TaskResultStatus.READY)
@@ -1017,7 +1018,7 @@ class DatabaseBackendWorkerTestCase(TransactionTestCase):
 
         self.assertEqual(DBTaskResult.objects.ready().count(), 1)
 
-        with self.assertNumQueries(18 if connection.vendor == "mysql" else 16):
+        with self.assertNumQueries(14 if connection.vendor == "mysql" else 12):
             self.run_worker(backend_name=result.backend)
 
         self.assertEqual(DBTaskResult.objects.ready().count(), 0)
@@ -1183,7 +1184,7 @@ class DatabaseBackendWorkerTestCase(TransactionTestCase):
 
         self.assertEqual(DBTaskResult.objects.ready().count(), 1)
 
-        with self.assertNumQueries(18 if connection.vendor == "mysql" else 16):
+        with self.assertNumQueries(14 if connection.vendor == "mysql" else 12):
             self.run_worker()
 
         self.assertEqual(DBTaskResult.objects.ready().count(), 0)
