@@ -139,6 +139,8 @@ class Worker:
                 healthcheck_server.shutdown()
                 healthcheck_server.server_close()
                 healthcheck_thread.join()
+            # Stop the heartbeat thread and wait for it to finish.
+            # It will send a final heartbeat update before exiting.
             self._heartbeat_stop.set()
             heartbeat_thread.join()
 
@@ -253,6 +255,9 @@ class Worker:
 
             if task_result is not None:
                 self.run_task(task_result)
+                # Check for heartbeat errors after running a task, since the task may have taken a long time to
+                # run and the heartbeat thread may have failed during that time. Also raise before checking for
+                # max_tasks, since we want to inform about errors even if the maximum tasks limit has been reached.
                 self._raise_heartbeat_error()
 
             if self.batch and retrieved_task_result and task_result is None:
@@ -300,6 +305,7 @@ class Worker:
             finally:
                 close_old_connections()
             if stopping:
+                # If the stop event was set, exit the loop and end the thread.
                 return
 
     def _raise_heartbeat_error(self) -> None:
