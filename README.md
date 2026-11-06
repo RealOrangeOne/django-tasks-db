@@ -47,6 +47,10 @@ You can run the `db_worker` command to run tasks as they're created. Check the `
 
 In `DEBUG`, the worker will automatically reload when code is changed (or by using `--reload`). This is not recommended in production environments as tasks may not be stopped cleanly.
 
+Workers record a heartbeat on startup and refresh it every 30 seconds by default. Use `--heartbeat-interval` to change the refresh interval.
+
+Start an HTTP healthcheck listener with `--healthcheck`. It serves `GET /health` as JSON with `last_heartbeat_at`, `heartbeat_interval` (seconds), and `processed_tasks` (including failed attempts). It returns HTTP 200 while the worker heartbeat is current or HTTP 503 when it is missing or older than twice the heartbeat interval. The listener binds to `127.0.0.1:8000` by default; configure it with `--healthcheck-address` and `--healthcheck-port`.
+
 ### Pruning old tasks
 
 After a while, tasks may start to build up in your database. This can be managed using the `prune_db_task_results` management command, which deletes completed tasks according to the given retention policy. Check the `--help` for the available options.
