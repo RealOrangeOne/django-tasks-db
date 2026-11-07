@@ -1,12 +1,15 @@
+import contextlib
 import logging
 import math
 import os
 import random
 import signal
 import sys
+import threading
 import time
 from argparse import ArgumentParser, ArgumentTypeError, BooleanOptionalAction
 from types import FrameType
+from typing import Any
 
 from django.conf import settings
 from django.core.exceptions import SuspiciousOperation
@@ -61,6 +64,20 @@ class Worker:
 
         self.worker_id = worker_id
 
+        self._notify_fd: int | None = None
+        self.notify_fd()
+
+    def notify_fd(self) -> int | None:
+        if self._notify_fd is None:
+            notify_fd = os.environ.pop("S6_NOTIFY_FD", None)
+            if notify_fd is not None:
+                try:
+                    self._notify_fd = int(notify_fd)
+                except ValueError:
+                    logger.exception("Invalid S6_NOTIFY_FD value: %r", notify_fd)
+
+        return self._notify_fd
+
     def shutdown(self, signum: int, frame: FrameType | None) -> None:
         if not self.running:
             logger.warning(
@@ -103,6 +120,18 @@ class Worker:
             # Add a random small delay before starting to avoid a thundering herd
             time.sleep(random.random())  # noqa: S311
 
+        if self._notify_fd is not None:
+            try:
+                # s6 expects a single newline character to signify the service is ready
+                os.write(self._notify_fd, b"\n")
+            except OSError:
+                # The worker is still functional even if notification fails.
+                logger.exception("Failed to notify s6 on fd: %d", self._notify_fd)
+            finally:
+                with contextlib.suppress(OSError):
+                    os.close(self._notify_fd)
+                self._notify_fd = None
+
         while self.running:
             # Check for dropped/expired connections right after waking up
             close_old_connections()
@@ -140,7 +169,7 @@ class Worker:
                     "No more tasks to run for worker_id=%s - exiting gracefully.",
                     self.worker_id,
                 )
-                return None
+                return
 
             if self.max_tasks is not None and self._run_tasks >= self.max_tasks:
                 logger.info(
@@ -148,7 +177,7 @@ class Worker:
                     self._run_tasks,
                     self.worker_id,
                 )
-                return None
+                return
 
             # Emulate Django's request behaviour and check for expired
             # database connections periodically.
@@ -206,6 +235,41 @@ class Worker:
         finally:
             self.running_task = False
             self._run_tasks += 1
+
+
+def _relay_fd_notification(worker: Worker) -> None:
+    """
+    In the reloader parent, relay the child's readiness newline to s6.
+
+    The parent never calls Worker.run(), so the child writes to a pipe instead
+    and this thread forwards the newline to the original s6 fd.
+    """
+    s6_fd = worker.notify_fd()
+    if s6_fd is None:
+        return
+
+    read_fd, write_fd = os.pipe()
+    os.set_inheritable(write_fd, True)
+    os.set_inheritable(s6_fd, False)
+    os.environ["S6_NOTIFY_FD"] = str(write_fd)
+
+    def relay() -> None:
+        try:
+            data = os.read(read_fd, 1)
+            if b"" != data:
+                os.write(s6_fd, b"\n")
+        except OSError:
+            logger.exception("Failed to relay s6 notification on fd: %s", s6_fd)
+        finally:
+            with contextlib.suppress(OSError):
+                os.close(s6_fd)
+            with contextlib.suppress(OSError):
+                os.close(read_fd)
+            with contextlib.suppress(OSError):
+                os.close(write_fd)
+            os.environ.pop("S6_NOTIFY_FD", None)
+
+    threading.Thread(target=relay, daemon=True).start()
 
 
 def valid_backend_name(val: str) -> str:
@@ -344,7 +408,7 @@ class Command(BaseCommand):
         max_tasks: int | None,
         worker_id: str,
         exclude_queues: str,
-        **options: dict,
+        **options: Any,
     ) -> None:
         self.configure_logging(verbosity)
 
@@ -375,6 +439,9 @@ class Command(BaseCommand):
             if os.environ.get(DJANGO_AUTORELOAD_ENV) == "true":
                 # Only the child process should configure its signals
                 worker.configure_signals()
+
+            else:
+                _relay_fd_notification(worker)
 
             run_with_reloader(worker.run)
         else:
