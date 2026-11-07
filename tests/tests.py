@@ -1788,13 +1788,17 @@ class DatabaseWorkerProcessTestCase(TransactionTestCase):
 
     @skipIf(sys.platform == "win32", "Terminate is always forceful on Windows")
     def test_interrupt_no_tasks(self) -> None:
-        process = self.start_worker()
+        args = [
+            "--interval",
+            str(10 * self.WORKER_STARTUP_TIME),
+        ]
+        process = self.start_worker(args)
 
         time.sleep(self.WORKER_STARTUP_TIME)
 
         process.terminate()
 
-        process.wait(timeout=0.5)
+        process.wait(timeout=(8 * self.WORKER_STARTUP_TIME))
         self.assertEqual(process.returncode, 0)
 
     @skipIf(sys.platform == "win32", "Cannot emulate CTRL-C on Windows")
