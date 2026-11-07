@@ -1744,6 +1744,8 @@ class DatabaseWorkerProcessTestCase(TransactionTestCase):
 
     @skipIf(sys.platform == "win32", "Cannot emulate CTRL-C on Windows")
     def test_interrupt_signals(self) -> None:
+        wait_timeout = 3
+
         for sig in [
             signal.SIGINT,  # ctrl-c
             signal.SIGTERM,
@@ -1753,6 +1755,7 @@ class DatabaseWorkerProcessTestCase(TransactionTestCase):
                 self.assertEqual(DBTaskResult.objects.get(id=result.id).worker_ids, [])
 
                 self.assertGreater(result.args[0], self.WORKER_STARTUP_TIME)
+                self.assertGreater(wait_timeout, result.args[0])
 
                 process = self.start_worker()
 
@@ -1767,7 +1770,7 @@ class DatabaseWorkerProcessTestCase(TransactionTestCase):
 
                 process.send_signal(sig)
 
-                process.wait(timeout=2)
+                process.wait(timeout=wait_timeout)
 
                 self.assertEqual(process.returncode, 0)
 
