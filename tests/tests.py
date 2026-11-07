@@ -14,6 +14,7 @@ from contextlib import redirect_stderr
 from datetime import datetime, timedelta
 from functools import partial
 from io import StringIO
+from types import TracebackType
 from typing import Any, cast
 from unittest import mock, skipIf
 
@@ -79,6 +80,76 @@ def skipIfInMemoryDB() -> Any:  # noqa:N802
         "Tests cannot run on in-memory DB",
         "skipIfInMemoryDB",
     )
+
+
+class ManagedWorker:
+    def __init__(self, /, *args: Any, env: dict | None = None, **kwargs: Any) -> None:
+        self._read_fd = None
+        self._write_fd = None
+
+        if not args:
+            raise TypeError("missing 1 required positional argument: 'args'")
+        popen_args = args[0] if isinstance(args[0], (list, tuple)) else args
+        popen_kwargs = {
+            **kwargs,
+            "env": os.environ.copy(),
+        }
+        if env:
+            popen_kwargs["env"].update(env)
+
+        if "posix" == os.name:
+            # POSIX: Setup the s6-style notification pipe
+            self._read_fd, self._write_fd = os.pipe()
+            popen_kwargs["env"]["S6_NOTIFY_FD"] = str(self._write_fd)
+            popen_kwargs["pass_fds"] = (self._write_fd,)
+
+        self.process = subprocess.Popen(args=popen_args, **popen_kwargs)
+        del popen_args, popen_kwargs
+
+        if self._write_fd is not None:
+            os.close(self._write_fd)
+            self._write_fd = None
+
+    def wait_until_ready(self, timeout: float = 6.0) -> bool:
+        if self._read_fd is None:
+            return True
+
+        import select
+
+        start = time.monotonic()
+        while timeout > (time.monotonic() - start):
+            if select.select([self._read_fd], [], [], 0.2)[0]:
+                data = os.read(self._read_fd, 1)
+                if b"" != data:
+                    self.close()
+                    return True
+        else:
+            raise TimeoutError("Worker failed to notify readiness")
+
+        return False
+
+    def close(self) -> None:
+        if self._read_fd is not None:
+            with contextlib.suppress(OSError):
+                os.close(self._read_fd)
+                self._read_fd = None
+
+    def terminate(self) -> None:
+        self.process.terminate()
+        self.process.wait()
+
+    def __enter__(self) -> "ManagedWorker":
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: TracebackType | None,
+    ) -> None:
+        # close first to expose a process that tried a late write
+        self.close()
+        self.terminate()
 
 
 class OrderedLogHandler(logging.Handler):
@@ -622,6 +693,7 @@ class DatabaseBackendWorkerTestCase(TransactionTestCase):
             batch=True,
             interval=0,
             startup_delay=False,
+            stdout=StringIO(),
             worker_id=self.worker_id,
         )
 
@@ -1749,7 +1821,7 @@ class DatabaseWorkerProcessTestCase(TransactionTestCase):
         if worker_id is None:
             worker_id = get_random_string(32)
 
-        p = subprocess.Popen(
+        mw = ManagedWorker(
             [
                 sys.executable,
                 "-m",
@@ -1771,8 +1843,10 @@ class DatabaseWorkerProcessTestCase(TransactionTestCase):
             },
             text=True,
         )
-        self.processes.append(p)
-        return p
+        with contextlib.closing(mw):
+            self.processes.append(mw.process)
+            mw.wait_until_ready()
+        return mw.process
 
     def test_run_subprocess(self) -> None:
         result = test_tasks.noop_task.enqueue()
