@@ -14,6 +14,9 @@ from contextlib import redirect_stderr
 from datetime import datetime, timedelta
 from functools import partial
 from io import StringIO
+from pathlib import Path
+from select import select
+from tempfile import TemporaryDirectory
 from typing import Any, cast
 from unittest import mock, skipIf
 
@@ -1670,6 +1673,24 @@ class DatabaseWorkerProcessTestCase(TransactionTestCase):
 
     def setUp(self) -> None:
         self.processes: list[subprocess.Popen] = []
+        self.worker_output: dict[int, bytearray] = {}
+
+    def wait_for_worker_output(self, process: subprocess.Popen, marker: bytes) -> None:
+        assert process.stdout is not None
+        output = self.worker_output.setdefault(process.pid, bytearray())
+        deadline = time.monotonic() + 10
+        while marker not in output:
+            readable, _, _ = select(
+                [process.stdout], [], [], max(0, deadline - time.monotonic())
+            )
+            if not readable:
+                self.fail(
+                    f"Timed out waiting for {marker!r}. Worker output: {output!r}"
+                )
+            chunk = os.read(process.stdout.fileno(), 4096)
+            if not chunk:
+                self.fail(f"Worker exited before {marker!r}. Worker output: {output!r}")
+            output.extend(chunk)
 
     def tearDown(self) -> None:
         # Try n times to kill any remaining child processes
@@ -1735,11 +1756,11 @@ class DatabaseWorkerProcessTestCase(TransactionTestCase):
     def test_interrupt_no_tasks(self) -> None:
         process = self.start_worker()
 
-        time.sleep(self.WORKER_STARTUP_TIME)
+        self.wait_for_worker_output(process, b"Starting worker worker_id=")
 
         process.terminate()
 
-        process.wait(timeout=0.5)
+        process.wait(timeout=5)
         self.assertEqual(process.returncode, 0)
 
     @skipIf(sys.platform == "win32", "Cannot emulate CTRL-C on Windows")
@@ -1748,16 +1769,14 @@ class DatabaseWorkerProcessTestCase(TransactionTestCase):
             signal.SIGINT,  # ctrl-c
             signal.SIGTERM,
         ]:
-            with self.subTest(sig):
-                result = test_tasks.sleep_for.enqueue(2)
+            with self.subTest(sig), TemporaryDirectory() as directory:
+                release = Path(directory) / "release"
+                result = test_tasks.wait_for_release.enqueue(str(release))
                 self.assertEqual(DBTaskResult.objects.get(id=result.id).worker_ids, [])
-
-                self.assertGreater(result.args[0], self.WORKER_STARTUP_TIME)
 
                 process = self.start_worker()
 
-                # Make sure the task is running by now
-                time.sleep(self.WORKER_STARTUP_TIME)
+                self.wait_for_worker_output(process, b"state=RUNNING")
 
                 result.refresh()
                 self.assertEqual(result.status, TaskResultStatus.RUNNING)
@@ -1766,8 +1785,10 @@ class DatabaseWorkerProcessTestCase(TransactionTestCase):
                 )
 
                 process.send_signal(sig)
+                self.wait_for_worker_output(process, b"shutting down gracefully")
+                release.touch()
 
-                process.wait(timeout=2)
+                process.wait(timeout=5)
 
                 self.assertEqual(process.returncode, 0)
 
@@ -1784,8 +1805,7 @@ class DatabaseWorkerProcessTestCase(TransactionTestCase):
 
         process = self.start_worker(worker_id=worker_id)
 
-        # Make sure the task is running by now
-        time.sleep(self.WORKER_STARTUP_TIME)
+        self.wait_for_worker_output(process, b"state=RUNNING")
 
         result.refresh()
         self.assertEqual(result.status, TaskResultStatus.RUNNING)
@@ -1793,7 +1813,7 @@ class DatabaseWorkerProcessTestCase(TransactionTestCase):
 
         process.send_signal(signal.SIGINT)
 
-        time.sleep(0.5)
+        self.wait_for_worker_output(process, b"shutting down gracefully")
 
         self.assertIsNone(process.poll())
         result.refresh()
@@ -1802,7 +1822,7 @@ class DatabaseWorkerProcessTestCase(TransactionTestCase):
 
         process.send_signal(signal.SIGINT)
 
-        process.wait(timeout=2)
+        process.wait(timeout=5)
 
         self.assertEqual(process.returncode, 0)
 
@@ -1819,15 +1839,14 @@ class DatabaseWorkerProcessTestCase(TransactionTestCase):
 
         process = self.start_worker()
 
-        # Make sure the task is running by now
-        time.sleep(self.WORKER_STARTUP_TIME)
+        self.wait_for_worker_output(process, b"state=RUNNING")
 
         result.refresh()
         self.assertEqual(result.status, TaskResultStatus.RUNNING)
 
         process.kill()
 
-        process.wait(timeout=2)
+        process.wait(timeout=5)
 
         self.assertEqual(process.returncode, -signal.SIGKILL)
 

@@ -1,4 +1,5 @@
 import time
+from pathlib import Path
 from typing import Any
 
 try:
@@ -72,6 +73,15 @@ def hang() -> None:
 @task()
 def sleep_for(seconds: float) -> None:
     time.sleep(seconds)
+
+
+@task()
+def wait_for_release(path: str) -> None:
+    deadline = time.monotonic() + 15
+    while not Path(path).exists():
+        if time.monotonic() >= deadline:
+            raise TimeoutError("Test task was not released")
+        time.sleep(0.025)
 
 
 @task(takes_context=True)
