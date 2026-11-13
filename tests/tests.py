@@ -1140,6 +1140,92 @@ class DatabaseBackendWorkerTestCase(TransactionTestCase):
         self.assertEqual(result_1.status, TaskResultStatus.READY)
         self.assertEqual(result_2.status, TaskResultStatus.SUCCESSFUL)
 
+    def test_worker_retries_on_transient_connection_error(self) -> None:
+        result = test_tasks.noop_task.enqueue()
+        calls = 0
+
+        class FlakyExclusiveTransaction:
+            def __init__(self, using: str | None = None) -> None:
+                self.using = using
+
+            def __enter__(self) -> Any:
+                nonlocal calls
+                calls += 1
+                if calls == 1:
+                    raise OperationalError(
+                        2013, "Lost connection to server at 'handshake'"
+                    )
+
+                self._cm = exclusive_transaction(using=self.using)
+                return self._cm.__enter__()
+
+            def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> Any:
+                if hasattr(self, "_cm"):
+                    return self._cm.__exit__(exc_type, exc_val, exc_tb)
+                return False
+
+        with (
+            mock.patch(
+                "django_tasks_db.management.commands.db_worker.exclusive_transaction",
+                side_effect=FlakyExclusiveTransaction,
+            ),
+            mock.patch(
+                "django_tasks_db.management.commands.db_worker.close_old_connections",
+            ),
+            mock.patch.object(connections["default"], "close") as mock_close,
+            self.assertLogs(logger="django_tasks_db", level="WARNING") as cm,
+        ):
+            self.run_worker(max_tasks=1, interval=0.01, verbosity=1)
+
+        result.refresh()
+        self.assertEqual(result.status, TaskResultStatus.SUCCESSFUL)
+        self.assertGreaterEqual(calls, 2)
+        mock_close.assert_called()
+        self.assertTrue(
+            any("Database error while polling for tasks" in msg for msg in cm.output)
+        )
+
+    def test_worker_ignores_locked_database_error_without_closing_connection(
+        self,
+    ) -> None:
+        result = test_tasks.noop_task.enqueue()
+        calls = 0
+
+        class LockedExclusiveTransaction:
+            def __init__(self, using: str | None = None) -> None:
+                self.using = using
+
+            def __enter__(self) -> Any:
+                nonlocal calls
+                calls += 1
+                if calls == 1:
+                    raise OperationalError("database is locked")
+
+                self._cm = exclusive_transaction(using=self.using)
+                return self._cm.__enter__()
+
+            def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> Any:
+                if hasattr(self, "_cm"):
+                    return self._cm.__exit__(exc_type, exc_val, exc_tb)
+                return False
+
+        with (
+            mock.patch(
+                "django_tasks_db.management.commands.db_worker.exclusive_transaction",
+                side_effect=LockedExclusiveTransaction,
+            ),
+            mock.patch(
+                "django_tasks_db.management.commands.db_worker.close_old_connections",
+            ),
+            mock.patch.object(connections["default"], "close") as mock_close,
+        ):
+            self.run_worker(max_tasks=1, interval=0.01, verbosity=1)
+
+        result.refresh()
+        self.assertEqual(result.status, TaskResultStatus.SUCCESSFUL)
+        self.assertGreaterEqual(calls, 2)
+        mock_close.assert_not_called()
+
     def test_max_tasks(self) -> None:
         results = [test_tasks.noop_task.enqueue() for _ in range(5)]
 
