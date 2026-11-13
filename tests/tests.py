@@ -5,6 +5,7 @@ import os
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 import uuid
 import warnings
@@ -14,12 +15,14 @@ from contextlib import redirect_stderr
 from datetime import datetime, timedelta
 from functools import partial
 from io import StringIO
+from pathlib import Path
 from typing import Any, cast
 from unittest import mock, skipIf
 
 from django import VERSION
 from django.contrib import admin
 from django.core.exceptions import ImproperlyConfigured, SuspiciousOperation
+from django.core.files import locks
 from django.core.management import CommandError, call_command, execute_from_command_line
 from django.db import connection, connections, transaction
 from django.db.models import QuerySet
@@ -1671,6 +1674,10 @@ class DatabaseWorkerProcessTestCase(TransactionTestCase):
     def setUp(self) -> None:
         self.processes: list[subprocess.Popen] = []
 
+        temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(temp_dir.cleanup)
+        self.temp_dir = Path(temp_dir.name)
+
     def tearDown(self) -> None:
         # Try n times to kill any remaining child processes
         for n in range(20):
@@ -1886,6 +1893,83 @@ class DatabaseWorkerProcessTestCase(TransactionTestCase):
         for result in results:
             # Running and successful
             self.assertEqual(all_output.count(result.id), 2)
+
+    def test_lock_file_held_while_running(self) -> None:
+        lock_file = self.temp_dir / "worker.lock"
+        self.start_worker(["--lock-file", str(lock_file)])
+
+        time.sleep(self.WORKER_STARTUP_TIME)
+
+        call_command("db_worker_healthcheck", lock_file, stdout=StringIO())
+
+    def test_lock_file_released_on_graceful_exit(self) -> None:
+        lock_file = self.temp_dir / "worker.lock"
+        process = self.start_worker(["--batch", "--lock-file", str(lock_file)])
+        process.wait(timeout=5)
+
+        self.assertEqual(process.returncode, 0)
+        self.assertFalse(lock_file.is_file())
+
+    def test_lock_file_released_on_kill(self) -> None:
+        lock_file = self.temp_dir / "worker.lock"
+        process = self.start_worker(["--lock-file", str(lock_file)])
+
+        time.sleep(self.WORKER_STARTUP_TIME)
+        call_command("db_worker_healthcheck", lock_file, stdout=StringIO())
+
+        process.kill()
+        process.wait(timeout=2)
+
+        with self.assertRaisesMessage(CommandError, "No worker is running"):
+            call_command("db_worker_healthcheck", lock_file)
+
+    def test_lock_file_is_exclusive(self) -> None:
+        lock_file = self.temp_dir / "worker.lock"
+
+        self.start_worker(["--lock-file", str(lock_file)])
+
+        time.sleep(self.WORKER_STARTUP_TIME)
+
+        second = self.start_worker(["--lock-file", str(lock_file)])
+        output, _ = second.communicate(timeout=1)
+
+        self.assertEqual(second.returncode, 1)
+        self.assertIn("Cannot lock file", output)
+
+        call_command("db_worker_healthcheck", lock_file, stdout=StringIO())
+
+
+class DatabaseWorkerHealthcheckTestCase(SimpleTestCase):
+    healthcheck = staticmethod(
+        partial(call_command, "db_worker_healthcheck", verbosity=0)
+    )
+
+    def setUp(self) -> None:
+        super().setUp()
+
+        temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(temp_dir.cleanup)
+        self.temp_dir = Path(temp_dir.name)
+
+    def test_missing_file(self) -> None:
+        with self.assertRaisesMessage(CommandError, "Lock file does not exist"):
+            self.healthcheck(self.temp_dir / "worker.lock")
+
+    def test_unlocked_file(self) -> None:
+        lock_file = self.temp_dir / "worker.lock"
+        lock_file.touch()
+
+        with self.assertRaisesMessage(CommandError, "No worker is running"):
+            self.healthcheck(lock_file, stdout=StringIO())
+
+    def test_locked_file(self) -> None:
+        lock_file = lock_file = self.temp_dir / "worker.lock"
+        with open(lock_file, "ab") as f:
+            locks.lock(f, locks.LOCK_EX)
+            self.healthcheck(lock_file, stdout=StringIO())
+
+        with self.assertRaisesMessage(CommandError, "No worker is running"):
+            self.healthcheck(lock_file, stdout=StringIO())
 
 
 class CompatTestCase(SimpleTestCase):

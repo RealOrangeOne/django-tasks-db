@@ -10,6 +10,7 @@ from types import FrameType
 
 from django.conf import settings
 from django.core.exceptions import SuspiciousOperation
+from django.core.files import locks
 from django.core.management.base import BaseCommand, CommandError
 from django.db import close_old_connections
 from django.db.utils import OperationalError
@@ -45,6 +46,7 @@ class Worker:
         max_tasks: int | None,
         worker_id: str,
         excluded_queue_names: list[str],
+        lock_file: str | None = None,
     ):
         self.queue_names = queue_names
         self.process_all_queues = "*" in queue_names
@@ -54,6 +56,7 @@ class Worker:
         self.backend_name = backend_name
         self.startup_delay = startup_delay
         self.max_tasks = max_tasks
+        self.lock_file = lock_file
 
         self.running = True
         self.running_task = False
@@ -93,6 +96,21 @@ class Worker:
             signal.signal(signal.SIGQUIT, signal.SIG_DFL)
 
     def run(self) -> None:
+        if self.lock_file is None:
+            self._run()
+        else:
+            with open(self.lock_file, "ab") as f:
+                # Hold an exclusive lock for the life of the worker
+                if not locks.lock(f, locks.LOCK_EX | locks.LOCK_NB):
+                    raise CommandError(
+                        "Cannot lock file - is another worker already running?"
+                    )
+                self._run()
+
+            # Clean up the lock file when exiting gracefully
+            os.remove(self.lock_file)
+
+    def _run(self) -> None:
         logger.info(
             "Starting worker worker_id=%s queues=%s",
             self.worker_id,
@@ -308,6 +326,12 @@ class Command(BaseCommand):
             help="Worker id. MUST be unique across worker pool (default: auto-generate)",
             default=get_random_string(32),
         )
+        parser.add_argument(
+            "--lock-file",
+            nargs="?",
+            default=None,
+            help="If provided, hold a lock on this file while the worker is running. Can be used with the db_worker_healthcheck command.",
+        )
 
     def configure_logging(self, verbosity: int | None) -> None:
         tasks_logger = logging.getLogger(TASKS_LOGGER)
@@ -344,6 +368,7 @@ class Command(BaseCommand):
         max_tasks: int | None,
         worker_id: str,
         exclude_queues: str,
+        lock_file: str | None,
         **options: dict,
     ) -> None:
         self.configure_logging(verbosity)
@@ -369,6 +394,7 @@ class Command(BaseCommand):
             max_tasks=max_tasks,
             worker_id=worker_id,
             excluded_queue_names=excluded_queue_names,
+            lock_file=lock_file,
         )
 
         if reload:
