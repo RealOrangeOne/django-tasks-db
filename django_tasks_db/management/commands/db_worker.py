@@ -6,7 +6,10 @@ import signal
 import sys
 import time
 from argparse import ArgumentParser, ArgumentTypeError, BooleanOptionalAction
+from collections.abc import Iterator
+from contextlib import ExitStack, contextmanager
 from types import FrameType
+from typing import Any
 
 from django.conf import settings
 from django.core.exceptions import SuspiciousOperation
@@ -31,6 +34,22 @@ from django_tasks_db.models import DBTaskResult
 from django_tasks_db.utils import exclusive_transaction, is_locked_database_exception
 
 logger = logging.getLogger("django_tasks_db")
+
+
+@contextmanager
+def _include_worker_id_in_logs(worker_id: str) -> Iterator[None]:
+    previous_factory = logging.getLogRecordFactory()
+
+    def record_factory(*args: Any, **kwargs: Any) -> logging.LogRecord:
+        record = previous_factory(*args, **kwargs)
+        record.__dict__["worker_id"] = worker_id
+        return record
+
+    logging.setLogRecordFactory(record_factory)
+    try:
+        yield
+    finally:
+        logging.setLogRecordFactory(previous_factory)
 
 
 class Worker:
@@ -308,8 +327,18 @@ class Command(BaseCommand):
             help="Worker id. MUST be unique across worker pool (default: auto-generate)",
             default=get_random_string(32),
         )
+        parser.add_argument(
+            "--log-worker-id",
+            action="store_true",
+            help=(
+                "Add worker_id to log records for custom formatters. "
+                "This reserves the worker_id field for the worker command."
+            ),
+        )
 
-    def configure_logging(self, verbosity: int | None) -> None:
+    def configure_logging(
+        self, verbosity: int | None, *, cleanup: ExitStack | None = None
+    ) -> None:
         tasks_logger = logging.getLogger(TASKS_LOGGER)
 
         if verbosity == 0:
@@ -321,15 +350,21 @@ class Command(BaseCommand):
 
         for configured_logger in [tasks_logger, logger]:
             if verbosity is not None or configured_logger.level == logging.NOTSET:
+                if cleanup is not None:
+                    cleanup.callback(
+                        configured_logger.setLevel, configured_logger.level
+                    )
                 configured_logger.setLevel(log_level)
 
         # If no handler is configured, the logs won't show,
         # regardless of the set level.
-        if not tasks_logger.hasHandlers():
-            tasks_logger.addHandler(logging.StreamHandler(self.stdout))
-
-        if not logger.hasHandlers():
-            logger.addHandler(logging.StreamHandler(self.stdout))
+        for configured_logger in [tasks_logger, logger]:
+            if not configured_logger.hasHandlers():
+                handler = logging.StreamHandler(self.stdout)
+                configured_logger.addHandler(handler)
+                if cleanup is not None:
+                    cleanup.callback(handler.close)
+                    cleanup.callback(configured_logger.removeHandler, handler)
 
     def handle(
         self,
@@ -344,39 +379,47 @@ class Command(BaseCommand):
         max_tasks: int | None,
         worker_id: str,
         exclude_queues: str,
+        log_worker_id: bool = False,
         **options: dict,
     ) -> None:
-        self.configure_logging(verbosity)
+        with ExitStack() as stack:
+            if log_worker_id:
+                stack.enter_context(_include_worker_id_in_logs(worker_id))
+                self.configure_logging(verbosity, cleanup=stack)
+            else:
+                self.configure_logging(verbosity)
 
-        if reload and batch:
-            logger.warning(
-                "Warning: --reload and --batch cannot be specified together. Disabling autoreload."
+            if reload and batch:
+                logger.warning(
+                    "Warning: --reload and --batch cannot be specified together. Disabling autoreload."
+                )
+                reload = False
+
+            queue_names = queue_name.split(",")
+            excluded_queue_names = exclude_queues.split(",") if exclude_queues else []
+
+            if excluded_queue_names and "*" not in queue_names:
+                raise CommandError(
+                    "--exclude-queues can only be used with --queue-name=*"
+                )
+
+            worker = Worker(
+                queue_names=queue_names,
+                interval=interval,
+                batch=batch,
+                backend_name=backend_name,
+                startup_delay=startup_delay,
+                max_tasks=max_tasks,
+                worker_id=worker_id,
+                excluded_queue_names=excluded_queue_names,
             )
-            reload = False
 
-        queue_names = queue_name.split(",")
-        excluded_queue_names = exclude_queues.split(",") if exclude_queues else []
+            if reload:
+                if os.environ.get(DJANGO_AUTORELOAD_ENV) == "true":
+                    # Only the child process should configure its signals
+                    worker.configure_signals()
 
-        if excluded_queue_names and "*" not in queue_names:
-            raise CommandError("--exclude-queues can only be used with --queue-name=*")
-
-        worker = Worker(
-            queue_names=queue_names,
-            interval=interval,
-            batch=batch,
-            backend_name=backend_name,
-            startup_delay=startup_delay,
-            max_tasks=max_tasks,
-            worker_id=worker_id,
-            excluded_queue_names=excluded_queue_names,
-        )
-
-        if reload:
-            if os.environ.get(DJANGO_AUTORELOAD_ENV) == "true":
-                # Only the child process should configure its signals
+                run_with_reloader(worker.run)
+            else:
                 worker.configure_signals()
-
-            run_with_reloader(worker.run)
-        else:
-            worker.configure_signals()
-            worker.run()
+                worker.run()
