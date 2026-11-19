@@ -828,6 +828,52 @@ class DatabaseBackendWorkerTestCase(TransactionTestCase):
         self.assertEqual(result.return_value, 42)
         self.assertEqual(result.errors, [])
 
+    @contextlib.contextmanager
+    def _capture_worker_signals(self) -> Iterator[list[tuple[str, TaskResultStatus]]]:
+        received: list[tuple[str, TaskResultStatus]] = []
+
+        def on_started(sender: Any, task_result: Any, **kwargs: Any) -> None:
+            received.append(("started", task_result.status))
+
+        def on_finished(sender: Any, task_result: Any, **kwargs: Any) -> None:
+            received.append(("finished", task_result.status))
+
+        compat.task_started.connect(on_started, sender=DatabaseBackend, weak=False)
+        compat.task_finished.connect(on_finished, sender=DatabaseBackend, weak=False)
+        try:
+            yield received
+        finally:
+            compat.task_started.disconnect(on_started, sender=DatabaseBackend)
+            compat.task_finished.disconnect(on_finished, sender=DatabaseBackend)
+
+    def test_signals_sent_by_backend_class_on_success(self) -> None:
+        test_tasks.calculate_meaning_of_life.enqueue()
+
+        with self._capture_worker_signals() as received:
+            self.run_worker()
+
+        self.assertEqual(
+            received,
+            [
+                ("started", TaskResultStatus.RUNNING),
+                ("finished", TaskResultStatus.SUCCESSFUL),
+            ],
+        )
+
+    def test_signals_sent_by_backend_class_on_failure(self) -> None:
+        test_tasks.failing_task_value_error.enqueue()
+
+        with self._capture_worker_signals() as received:
+            self.run_worker()
+
+        self.assertEqual(
+            received,
+            [
+                ("started", TaskResultStatus.RUNNING),
+                ("finished", TaskResultStatus.FAILED),
+            ],
+        )
+
     def test_complex_exception(self) -> None:
         result = test_tasks.complex_exception.enqueue()
         self.assertEqual(DBTaskResult.objects.ready().count(), 1)
