@@ -11,7 +11,7 @@ from types import FrameType
 from django.conf import settings
 from django.core.exceptions import SuspiciousOperation
 from django.core.management.base import BaseCommand, CommandError
-from django.db import close_old_connections
+from django.db import close_old_connections, connections
 from django.db.utils import OperationalError
 from django.utils.autoreload import DJANGO_AUTORELOAD_ENV, run_with_reloader
 from django.utils.crypto import get_random_string
@@ -113,23 +113,35 @@ class Worker:
             if self.excluded_queue_names:
                 tasks = tasks.exclude(queue_name__in=self.excluded_queue_names)
 
-            with exclusive_transaction(tasks.db):
-                try:
-                    task_result = tasks.get_locked()
-                    retrieved_task_result = True
+            try:
+                with exclusive_transaction(tasks.db):
+                    try:
+                        task_result = tasks.get_locked()
+                        retrieved_task_result = True
 
-                    if task_result is not None:
-                        # "claim" the task, so it isn't run by another worker process
-                        task_result.claim(self.worker_id)
-                except OperationalError as e:
-                    retrieved_task_result = False
+                        if task_result is not None:
+                            # "claim" the task, so it isn't run by another worker process
+                            task_result.claim(self.worker_id)
+                    except OperationalError as e:
+                        retrieved_task_result = False
 
-                    # Ignore locked databases and keep trying.
-                    # It should unlock eventually.
-                    if is_locked_database_exception(e):
-                        task_result = None
-                    else:
-                        raise
+                        # Ignore locked databases and keep trying.
+                        # It should unlock eventually.
+                        if is_locked_database_exception(e):
+                            task_result = None
+                        else:
+                            raise
+            except OperationalError as e:
+                # Catch transient database connection errors (e.g. lost connection / DNS hiccup)
+                # while establishing or running the exclusive transaction during polling.
+                retrieved_task_result = False
+                task_result = None
+                if not is_locked_database_exception(e):
+                    logger.warning(
+                        "Database error while polling for tasks: %s. Closing connection and retrying.",
+                        e,
+                    )
+                    connections[tasks.db].close()
 
             if task_result is not None:
                 self.run_task(task_result)
