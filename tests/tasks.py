@@ -1,3 +1,4 @@
+import logging
 import time
 from typing import Any
 
@@ -7,6 +8,14 @@ except (ImportError, ModuleNotFoundError):
     from django_tasks import (  # type: ignore[assignment,no-redef,unused-ignore]
         TaskContext,
         task,
+    )
+
+
+@task()
+def log_from_task() -> None:
+    logging.getLogger(__name__).warning("Application %s", "message")
+    logging.getLogger("django_tasks_db.child").warning(
+        "Child %(word)s", {"word": "message"}
     )
 
 

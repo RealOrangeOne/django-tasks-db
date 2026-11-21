@@ -6,6 +6,9 @@ import signal
 import sys
 import time
 from argparse import ArgumentParser, ArgumentTypeError, BooleanOptionalAction
+from collections.abc import Iterator
+from contextlib import ExitStack, contextmanager
+from contextvars import ContextVar, copy_context
 from types import FrameType
 
 from django.conf import settings
@@ -31,6 +34,38 @@ from django_tasks_db.models import DBTaskResult
 from django_tasks_db.utils import exclusive_transaction, is_locked_database_exception
 
 logger = logging.getLogger("django_tasks_db")
+_current_worker: ContextVar[str | None] = ContextVar("db_worker_id", default=None)
+
+
+@contextmanager
+def _worker_logging(worker_id: str) -> Iterator[None]:
+    def add_worker_id(record: logging.LogRecord) -> bool:
+        if _current_worker.get() == worker_id and not getattr(
+            record, "_db_worker_tagged", False
+        ):
+            # Logging applies %-formatting to the whole message when it has args.
+            prefix_id = worker_id.replace("%", "%%") if record.args else worker_id
+            record.msg = f"[worker_id={prefix_id}] {record.msg}"
+            record.__dict__.update(worker_id=worker_id, _db_worker_tagged=True)
+        return True
+
+    # Use handlers so child loggers that propagate and applications with their
+    # own handlers both get the ID. A record may pass through several handlers.
+    root = logging.getLogger()
+    handlers = set(root.handlers)
+    for target in root.manager.loggerDict.copy().values():
+        if isinstance(target, logging.Logger):
+            handlers.update(target.handlers)
+    if logging.lastResort is not None:
+        handlers.add(logging.lastResort)
+
+    with ExitStack() as cleanup:
+        for handler in handlers:
+            handler.addFilter(add_worker_id)
+            cleanup.callback(handler.removeFilter, add_worker_id)
+        token = _current_worker.set(worker_id)
+        cleanup.callback(_current_worker.reset, token)
+        yield
 
 
 class Worker:
@@ -93,11 +128,7 @@ class Worker:
             signal.signal(signal.SIGQUIT, signal.SIG_DFL)
 
     def run(self) -> None:
-        logger.info(
-            "Starting worker worker_id=%s queues=%s",
-            self.worker_id,
-            ",".join(self.queue_names),
-        )
+        logger.info("Starting worker queues=%s", ",".join(self.queue_names))
 
         if self.startup_delay and self.interval:
             # Add a random small delay before starting to avoid a thundering herd
@@ -136,17 +167,12 @@ class Worker:
 
             if self.batch and retrieved_task_result and task_result is None:
                 # If we're running in "batch" mode, terminate the loop (and thus the worker)
-                logger.info(
-                    "No more tasks to run for worker_id=%s - exiting gracefully.",
-                    self.worker_id,
-                )
+                logger.info("No more tasks to run - exiting gracefully.")
                 return None
 
             if self.max_tasks is not None and self._run_tasks >= self.max_tasks:
                 logger.info(
-                    "Run maximum tasks (%d) on worker=%s - exiting gracefully.",
-                    self._run_tasks,
-                    self.worker_id,
+                    "Run maximum tasks (%d) - exiting gracefully.", self._run_tasks
                 )
                 return None
 
@@ -348,35 +374,39 @@ class Command(BaseCommand):
     ) -> None:
         self.configure_logging(verbosity)
 
-        if reload and batch:
-            logger.warning(
-                "Warning: --reload and --batch cannot be specified together. Disabling autoreload."
+        with _worker_logging(worker_id):
+            if reload and batch:
+                logger.warning(
+                    "Warning: --reload and --batch cannot be specified together. Disabling autoreload."
+                )
+                reload = False
+
+            queue_names = queue_name.split(",")
+            excluded_queue_names = exclude_queues.split(",") if exclude_queues else []
+
+            if excluded_queue_names and "*" not in queue_names:
+                raise CommandError(
+                    "--exclude-queues can only be used with --queue-name=*"
+                )
+
+            worker = Worker(
+                queue_names=queue_names,
+                interval=interval,
+                batch=batch,
+                backend_name=backend_name,
+                startup_delay=startup_delay,
+                max_tasks=max_tasks,
+                worker_id=worker_id,
+                excluded_queue_names=excluded_queue_names,
             )
-            reload = False
 
-        queue_names = queue_name.split(",")
-        excluded_queue_names = exclude_queues.split(",") if exclude_queues else []
+            if reload:
+                if os.environ.get(DJANGO_AUTORELOAD_ENV) == "true":
+                    # Only the child process should configure its signals
+                    worker.configure_signals()
 
-        if excluded_queue_names and "*" not in queue_names:
-            raise CommandError("--exclude-queues can only be used with --queue-name=*")
-
-        worker = Worker(
-            queue_names=queue_names,
-            interval=interval,
-            batch=batch,
-            backend_name=backend_name,
-            startup_delay=startup_delay,
-            max_tasks=max_tasks,
-            worker_id=worker_id,
-            excluded_queue_names=excluded_queue_names,
-        )
-
-        if reload:
-            if os.environ.get(DJANGO_AUTORELOAD_ENV) == "true":
-                # Only the child process should configure its signals
+                # The reloader runs the callback on another thread.
+                run_with_reloader(copy_context().run, worker.run)
+            else:
                 worker.configure_signals()
-
-            run_with_reloader(worker.run)
-        else:
-            worker.configure_signals()
-            worker.run()
+                worker.run()
