@@ -8,8 +8,8 @@ import time
 from argparse import ArgumentParser, ArgumentTypeError, BooleanOptionalAction
 from collections.abc import Iterator
 from contextlib import ExitStack, contextmanager
+from contextvars import ContextVar, copy_context
 from types import FrameType
-from typing import Any
 
 from django.conf import settings
 from django.core.exceptions import SuspiciousOperation
@@ -34,22 +34,38 @@ from django_tasks_db.models import DBTaskResult
 from django_tasks_db.utils import exclusive_transaction, is_locked_database_exception
 
 logger = logging.getLogger("django_tasks_db")
+_current_worker: ContextVar[str | None] = ContextVar("db_worker_id", default=None)
 
 
 @contextmanager
-def _include_worker_id_in_logs(worker_id: str) -> Iterator[None]:
-    previous_factory = logging.getLogRecordFactory()
+def _worker_logging(worker_id: str) -> Iterator[None]:
+    def add_worker_id(record: logging.LogRecord) -> bool:
+        if _current_worker.get() == worker_id and not getattr(
+            record, "_db_worker_tagged", False
+        ):
+            # Logging applies %-formatting to the whole message when it has args.
+            prefix_id = worker_id.replace("%", "%%") if record.args else worker_id
+            record.msg = f"[worker_id={prefix_id}] {record.msg}"
+            record.__dict__.update(worker_id=worker_id, _db_worker_tagged=True)
+        return True
 
-    def record_factory(*args: Any, **kwargs: Any) -> logging.LogRecord:
-        record = previous_factory(*args, **kwargs)
-        record.__dict__["worker_id"] = worker_id
-        return record
+    # Use handlers so child loggers that propagate and applications with their
+    # own handlers both get the ID. A record may pass through several handlers.
+    root = logging.getLogger()
+    handlers = set(root.handlers)
+    for target in root.manager.loggerDict.copy().values():
+        if isinstance(target, logging.Logger):
+            handlers.update(target.handlers)
+    if logging.lastResort is not None:
+        handlers.add(logging.lastResort)
 
-    logging.setLogRecordFactory(record_factory)
-    try:
+    with ExitStack() as cleanup:
+        for handler in handlers:
+            handler.addFilter(add_worker_id)
+            cleanup.callback(handler.removeFilter, add_worker_id)
+        token = _current_worker.set(worker_id)
+        cleanup.callback(_current_worker.reset, token)
         yield
-    finally:
-        logging.setLogRecordFactory(previous_factory)
 
 
 class Worker:
@@ -112,11 +128,7 @@ class Worker:
             signal.signal(signal.SIGQUIT, signal.SIG_DFL)
 
     def run(self) -> None:
-        logger.info(
-            "Starting worker worker_id=%s queues=%s",
-            self.worker_id,
-            ",".join(self.queue_names),
-        )
+        logger.info("Starting worker queues=%s", ",".join(self.queue_names))
 
         if self.startup_delay and self.interval:
             # Add a random small delay before starting to avoid a thundering herd
@@ -155,17 +167,12 @@ class Worker:
 
             if self.batch and retrieved_task_result and task_result is None:
                 # If we're running in "batch" mode, terminate the loop (and thus the worker)
-                logger.info(
-                    "No more tasks to run for worker_id=%s - exiting gracefully.",
-                    self.worker_id,
-                )
+                logger.info("No more tasks to run - exiting gracefully.")
                 return None
 
             if self.max_tasks is not None and self._run_tasks >= self.max_tasks:
                 logger.info(
-                    "Run maximum tasks (%d) on worker=%s - exiting gracefully.",
-                    self._run_tasks,
-                    self.worker_id,
+                    "Run maximum tasks (%d) - exiting gracefully.", self._run_tasks
                 )
                 return None
 
@@ -327,18 +334,8 @@ class Command(BaseCommand):
             help="Worker id. MUST be unique across worker pool (default: auto-generate)",
             default=get_random_string(32),
         )
-        parser.add_argument(
-            "--log-worker-id",
-            action="store_true",
-            help=(
-                "Add worker_id to log records for custom formatters. "
-                "This reserves the worker_id field for the worker command."
-            ),
-        )
 
-    def configure_logging(
-        self, verbosity: int | None, *, cleanup: ExitStack | None = None
-    ) -> None:
+    def configure_logging(self, verbosity: int | None) -> None:
         tasks_logger = logging.getLogger(TASKS_LOGGER)
 
         if verbosity == 0:
@@ -350,21 +347,15 @@ class Command(BaseCommand):
 
         for configured_logger in [tasks_logger, logger]:
             if verbosity is not None or configured_logger.level == logging.NOTSET:
-                if cleanup is not None:
-                    cleanup.callback(
-                        configured_logger.setLevel, configured_logger.level
-                    )
                 configured_logger.setLevel(log_level)
 
         # If no handler is configured, the logs won't show,
         # regardless of the set level.
-        for configured_logger in [tasks_logger, logger]:
-            if not configured_logger.hasHandlers():
-                handler = logging.StreamHandler(self.stdout)
-                configured_logger.addHandler(handler)
-                if cleanup is not None:
-                    cleanup.callback(handler.close)
-                    cleanup.callback(configured_logger.removeHandler, handler)
+        if not tasks_logger.hasHandlers():
+            tasks_logger.addHandler(logging.StreamHandler(self.stdout))
+
+        if not logger.hasHandlers():
+            logger.addHandler(logging.StreamHandler(self.stdout))
 
     def handle(
         self,
@@ -379,16 +370,11 @@ class Command(BaseCommand):
         max_tasks: int | None,
         worker_id: str,
         exclude_queues: str,
-        log_worker_id: bool = False,
         **options: dict,
     ) -> None:
-        with ExitStack() as stack:
-            if log_worker_id:
-                stack.enter_context(_include_worker_id_in_logs(worker_id))
-                self.configure_logging(verbosity, cleanup=stack)
-            else:
-                self.configure_logging(verbosity)
+        self.configure_logging(verbosity)
 
+        with _worker_logging(worker_id):
             if reload and batch:
                 logger.warning(
                     "Warning: --reload and --batch cannot be specified together. Disabling autoreload."
@@ -419,7 +405,8 @@ class Command(BaseCommand):
                     # Only the child process should configure its signals
                     worker.configure_signals()
 
-                run_with_reloader(worker.run)
+                # The reloader runs the callback on another thread.
+                run_with_reloader(copy_context().run, worker.run)
             else:
                 worker.configure_signals()
                 worker.run()

@@ -10,6 +10,7 @@ import uuid
 import warnings
 from collections import Counter
 from collections.abc import Iterator, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import redirect_stderr
 from datetime import datetime, timedelta
 from functools import partial
@@ -1067,10 +1068,77 @@ class DatabaseBackendWorkerTestCase(TransactionTestCase):
         self.assertEqual(
             stdout.getvalue().splitlines(),
             [
-                f"Starting worker worker_id={self.worker_id} queues=default",
-                f"Task id={result.id} path=tests.tasks.noop_task state=RUNNING",
-                f"Task id={result.id} path=tests.tasks.noop_task state=SUCCESSFUL",
-                f"No more tasks to run for worker_id={self.worker_id} - exiting gracefully.",
+                f"[worker_id={self.worker_id}] Starting worker queues=default",
+                f"[worker_id={self.worker_id}] Task id={result.id} path=tests.tasks.noop_task state=RUNNING",
+                f"[worker_id={self.worker_id}] Task id={result.id} path=tests.tasks.noop_task state=SUCCESSFUL",
+                f"[worker_id={self.worker_id}] No more tasks to run - exiting gracefully.",
+            ],
+        )
+
+    def test_worker_id_on_task_logs(self) -> None:
+        worker_id = "worker-50%"
+        result = test_tasks.log_from_task.enqueue()
+        with self.assertLogs("tests") as app, self.assertLogs("django_tasks_db") as db:
+            self.run_worker(verbosity=1, worker_id=worker_id)
+
+        result.refresh()
+        self.assertEqual(result.status, TaskResultStatus.SUCCESSFUL)
+        child = [r for r in db.records if r.name == "django_tasks_db.child"]
+        self.assertEqual(
+            [
+                (r.getMessage(), getattr(r, "worker_id", None))
+                for r in app.records + child
+            ],
+            [
+                (f"[worker_id={worker_id}] Application message", worker_id),
+                (f"[worker_id={worker_id}] Child message", worker_id),
+            ],
+        )
+
+    def test_worker_id_on_reload_batch_warning(self) -> None:
+        with self.assertLogs("django_tasks_db", level="WARNING") as logs:
+            self.run_worker(reload=True, verbosity=1)
+
+        (warning,) = [r for r in logs.records if r.levelno == logging.WARNING]
+        self.assertEqual(getattr(warning, "worker_id", None), self.worker_id)
+        self.assertIn(
+            f"{self.worker_id} [worker_id={self.worker_id}] Warning: --reload and --batch",
+            logging.Formatter("%(worker_id)s %(message)s").format(warning),
+        )
+
+    def test_worker_id_is_scoped_to_worker_execution(self) -> None:
+        logger = logging.getLogger(LOGGER)
+        worker_module = "django_tasks_db.management.commands.db_worker"
+        with (
+            self.assertLogs(logger) as logs,
+            ThreadPoolExecutor(1) as unrelated,
+            ThreadPoolExecutor(1) as reloader,
+        ):
+            unrelated.submit(logger.warning, "Before worker").result()
+
+            def run() -> None:
+                logger.warning("Worker thread")
+                unrelated.submit(logger.warning, "Other thread").result()
+
+            with (
+                mock.patch(f"{worker_module}.Worker.run", side_effect=run),
+                mock.patch(
+                    f"{worker_module}.run_with_reloader",
+                    side_effect=lambda func, *args: reloader.submit(
+                        func, *args
+                    ).result(),
+                ),
+            ):
+                self.run_worker(batch=False, reload=True, verbosity=1)
+            logger.warning("After worker")
+
+        self.assertEqual(
+            [(r.getMessage(), getattr(r, "worker_id", None)) for r in logs.records],
+            [
+                ("Before worker", None),
+                (f"[worker_id={self.worker_id}] Worker thread", self.worker_id),
+                ("Other thread", None),
+                ("After worker", None),
             ],
         )
 
