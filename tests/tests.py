@@ -829,22 +829,24 @@ class DatabaseBackendWorkerTestCase(TransactionTestCase):
         self.assertEqual(result.errors, [])
 
     @contextlib.contextmanager
-    def _capture_worker_signals(self) -> Iterator[list[tuple[str, TaskResultStatus]]]:
-        received: list[tuple[str, TaskResultStatus]] = []
+    def _capture_worker_signals(
+        self,
+    ) -> Iterator[list[tuple[str, Any, TaskResultStatus]]]:
+        received: list[tuple[str, Any, TaskResultStatus]] = []
 
         def on_started(sender: Any, task_result: Any, **kwargs: Any) -> None:
-            received.append(("started", task_result.status))
+            received.append(("started", sender, task_result.status))
 
         def on_finished(sender: Any, task_result: Any, **kwargs: Any) -> None:
-            received.append(("finished", task_result.status))
+            received.append(("finished", sender, task_result.status))
 
-        compat.task_started.connect(on_started, sender=DatabaseBackend, weak=False)
-        compat.task_finished.connect(on_finished, sender=DatabaseBackend, weak=False)
+        compat.task_started.connect(on_started, weak=False)
+        compat.task_finished.connect(on_finished, weak=False)
         try:
             yield received
         finally:
-            compat.task_started.disconnect(on_started, sender=DatabaseBackend)
-            compat.task_finished.disconnect(on_finished, sender=DatabaseBackend)
+            compat.task_started.disconnect(on_started)
+            compat.task_finished.disconnect(on_finished)
 
     def test_signals_sent_by_backend_class_on_success(self) -> None:
         test_tasks.calculate_meaning_of_life.enqueue()
@@ -855,8 +857,8 @@ class DatabaseBackendWorkerTestCase(TransactionTestCase):
         self.assertEqual(
             received,
             [
-                ("started", TaskResultStatus.RUNNING),
-                ("finished", TaskResultStatus.SUCCESSFUL),
+                ("started", DatabaseBackend, TaskResultStatus.RUNNING),
+                ("finished", DatabaseBackend, TaskResultStatus.SUCCESSFUL),
             ],
         )
 
@@ -869,8 +871,8 @@ class DatabaseBackendWorkerTestCase(TransactionTestCase):
         self.assertEqual(
             received,
             [
-                ("started", TaskResultStatus.RUNNING),
-                ("finished", TaskResultStatus.FAILED),
+                ("started", DatabaseBackend, TaskResultStatus.RUNNING),
+                ("finished", DatabaseBackend, TaskResultStatus.FAILED),
             ],
         )
 
