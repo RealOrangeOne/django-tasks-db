@@ -1,11 +1,12 @@
 import logging
 import os
 import socket
-import sys
 from contextlib import ExitStack
 from pathlib import Path
 
 from django.core.files import locks
+
+from .utils import IS_WINDOWS
 
 logger = logging.getLogger("django_tasks_db")
 
@@ -24,6 +25,8 @@ class SDNotify:
             self.socket_address = socket_path
 
     def _send(self, message: bytes) -> bool:
+        assert hasattr(socket, "AF_UNIX")  # noqa: S101
+
         try:
             with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as sock:
                 sock.connect(self.socket_address)
@@ -122,7 +125,7 @@ class WorkerStatus:
         """
         Report that the worker is currently running a task.
         """
-        if self.lock_file is not None and sys.platform != "win32":
+        if self.lock_file is not None and not IS_WINDOWS:
             self.lock_file.write_text(task_id)
 
         if self.sd_notify is not None:
@@ -134,7 +137,7 @@ class WorkerStatus:
         """
         Report that the worker is not running a task anymore.
         """
-        if self.lock_file is not None and sys.platform != "win32":
+        if self.lock_file is not None and not IS_WINDOWS:
             self.lock_file.write_text("")
 
         if self.sd_notify is not None:
