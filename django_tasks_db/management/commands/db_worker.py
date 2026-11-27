@@ -6,6 +6,7 @@ import signal
 import sys
 import time
 from argparse import ArgumentParser, ArgumentTypeError, BooleanOptionalAction
+from pathlib import Path
 from types import FrameType
 
 from django.conf import settings
@@ -29,6 +30,7 @@ from django_tasks_db.compat import (
 )
 from django_tasks_db.models import DBTaskResult
 from django_tasks_db.utils import exclusive_transaction, is_locked_database_exception
+from django_tasks_db.worker_status import WorkerStatus
 
 logger = logging.getLogger("django_tasks_db")
 
@@ -45,6 +47,7 @@ class Worker:
         max_tasks: int | None,
         worker_id: str,
         excluded_queue_names: list[str],
+        lock_file: Path | None = None,
     ):
         self.queue_names = queue_names
         self.process_all_queues = "*" in queue_names
@@ -54,12 +57,18 @@ class Worker:
         self.backend_name = backend_name
         self.startup_delay = startup_delay
         self.max_tasks = max_tasks
+        self.lock_file = lock_file
 
         self.running = True
         self.running_task = False
         self._run_tasks = 0
 
         self.worker_id = worker_id
+
+        self.status = WorkerStatus(
+            worker_id=self.worker_id,
+            lock_file=self.lock_file,
+        )
 
     def shutdown(self, signum: int, frame: FrameType | None) -> None:
         if not self.running:
@@ -93,15 +102,26 @@ class Worker:
             signal.signal(signal.SIGQUIT, signal.SIG_DFL)
 
     def run(self) -> None:
+        if self.startup_delay and self.interval:
+            # Add a random small delay before starting to avoid a thundering herd
+            time.sleep(random.random())  # noqa: S311
+
+        if not self.status.mark_started():
+            raise CommandError(
+                "Failed to mark worker as started - is another worker already running?"
+            )
+
+        self._run()
+
+        if not self.status.mark_stopped():
+            raise CommandError("Failed to mark worker as stopped.")
+
+    def _run(self) -> None:
         logger.info(
             "Starting worker worker_id=%s queues=%s",
             self.worker_id,
             ",".join(self.queue_names),
         )
-
-        if self.startup_delay and self.interval:
-            # Add a random small delay before starting to avoid a thundering herd
-            time.sleep(random.random())  # noqa: S311
 
         while self.running:
             # Check for dropped/expired connections right after waking up
@@ -130,6 +150,8 @@ class Worker:
                         task_result = None
                     else:
                         raise
+
+            self.status.ping()
 
             if task_result is not None:
                 self.run_task(task_result)
@@ -166,6 +188,7 @@ class Worker:
         """
         try:
             self.running_task = True
+            self.status.mark_running_task(str(db_task_result.id))
             task = db_task_result.task
             task_result = db_task_result.task_result
 
@@ -206,6 +229,7 @@ class Worker:
         finally:
             self.running_task = False
             self._run_tasks += 1
+            self.status.mark_not_running_task()
 
 
 def valid_backend_name(val: str) -> str:
@@ -308,6 +332,13 @@ class Command(BaseCommand):
             help="Worker id. MUST be unique across worker pool (default: auto-generate)",
             default=get_random_string(32),
         )
+        parser.add_argument(
+            "--lock-file",
+            nargs="?",
+            default=None,
+            type=Path,
+            help="If provided, hold a lock on this file while the worker is running. Can be used with the db_worker_healthcheck command.",
+        )
 
     def configure_logging(self, verbosity: int | None) -> None:
         tasks_logger = logging.getLogger(TASKS_LOGGER)
@@ -344,6 +375,7 @@ class Command(BaseCommand):
         max_tasks: int | None,
         worker_id: str,
         exclude_queues: str,
+        lock_file: Path | None,
         **options: dict,
     ) -> None:
         self.configure_logging(verbosity)
@@ -369,6 +401,7 @@ class Command(BaseCommand):
             max_tasks=max_tasks,
             worker_id=worker_id,
             excluded_queue_names=excluded_queue_names,
+            lock_file=lock_file,
         )
 
         if reload:
