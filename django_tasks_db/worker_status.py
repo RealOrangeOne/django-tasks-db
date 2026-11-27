@@ -134,6 +134,9 @@ class WorkerStatus:
         """
         Report that the worker is not running a task anymore.
         """
+        if self.lock_file is not None and sys.platform != "win32":
+            self.lock_file.write_text("")
+
         if self.sd_notify is not None:
             self.sd_notify.status("")
 
