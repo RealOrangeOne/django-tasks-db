@@ -1747,6 +1747,8 @@ class DatabaseWorkerProcessTestCase(TransactionTestCase):
                 worker_id,
                 "--lock-file",
                 str(lock_file),
+                "--interval",
+                "0",
                 *args,
             ],
             stdout=None if debug else subprocess.PIPE,
@@ -1784,7 +1786,7 @@ class DatabaseWorkerProcessTestCase(TransactionTestCase):
 
         while True:
             result.refresh()
-            if result.status == TaskResultStatus.RUNNING:
+            if result.status != TaskResultStatus.READY:
                 return
 
             if time.time() >= deadline:
@@ -2003,7 +2005,7 @@ class DatabaseWorkerProcessTestCase(TransactionTestCase):
         lock_file = self.temp_dir / "worker.lock"
 
         test_tasks.sleep_for.enqueue(0.5)
-        second_result = test_tasks.sleep_for.enqueue(0.1)
+        second_result = test_tasks.sleep_for.enqueue(0.5)
 
         self.start_worker(["--batch"], lock_file=lock_file)
         worker_started = time.time()
