@@ -61,6 +61,10 @@ When a worker is running a task, the task's id is written to the text file. This
 
 To check the health of the worker using the lock file, use the `db_worker_healthcheck` management command, and provide the lock file's path. You can also pass `--max-age` to ensure the worker has `touch`'d the lock file in at least this many seconds.
 
+##### `sd_notify`
+
+`db_worker` supports the [`sd_notify(3)`](https://www.freedesktop.org/software/systemd/man/254/sd_pid_notify.html) API, for communicating worker status to `systemd` (or other compatible tools). Set `Notify=true` in your `.service` to enable.
+
 ### Pruning old tasks
 
 After a while, tasks may start to build up in your database. This can be managed using the `prune_db_task_results` management command, which deletes completed tasks according to the given retention policy. Check the `--help` for the available options.
