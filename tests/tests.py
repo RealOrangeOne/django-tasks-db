@@ -1835,6 +1835,20 @@ class DatabaseWorkerProcessTestCase(TransactionTestCase):
 
         return p
 
+    def wait_for_finished(self, result: Any) -> None:
+        deadline = time.time() + WORKER_WAIT_TIMEOUT
+
+        while True:
+            result.refresh()
+            if result.status in [TaskResultStatus.SUCCESSFUL, TaskResultStatus.FAILED]:
+                return
+
+            if time.time() >= deadline:
+                self.fail(
+                    f"Task {result.id} was not completed within {WORKER_WAIT_TIMEOUT} seconds"
+                )
+            time.sleep(0.1)
+
     def wait_for_running(self, result: Any) -> None:
         deadline = time.time() + WORKER_WAIT_TIMEOUT
 
@@ -2047,13 +2061,17 @@ class DatabaseWorkerProcessTestCase(TransactionTestCase):
     )
     def test_lock_file_contains_task_id(self) -> None:
         lock_file = self.temp_dir / "worker.lock"
-        result = test_tasks.sleep_for.enqueue(2)
+        result = test_tasks.sleep_for.enqueue(1)
 
         self.start_worker(lock_file=lock_file)
 
         self.wait_for_running(result)
 
         self.assertEqual(lock_file.read_text(), f"{result.id}")
+
+        self.wait_for_finished(result)
+
+        self.assertEqual(lock_file.read_text(), "")
 
     def test_lock_file_touched(self) -> None:
         lock_file = self.temp_dir / "worker.lock"
