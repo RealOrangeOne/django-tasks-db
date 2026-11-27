@@ -1930,7 +1930,7 @@ class DatabaseWorkerProcessTestCase(TransactionTestCase):
         output, _ = second.communicate(timeout=WORKER_WAIT_TIMEOUT)
 
         self.assertEqual(second.returncode, 1)
-        self.assertIn("Cannot lock file", output)
+        self.assertIn("Failed to mark worker as started", output)
 
         call_command("db_worker_healthcheck", lock_file, stdout=StringIO())
 

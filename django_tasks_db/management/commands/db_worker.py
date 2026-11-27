@@ -11,7 +11,6 @@ from types import FrameType
 
 from django.conf import settings
 from django.core.exceptions import SuspiciousOperation
-from django.core.files import locks
 from django.core.management.base import BaseCommand, CommandError
 from django.db import close_old_connections
 from django.db.utils import OperationalError
@@ -31,6 +30,7 @@ from django_tasks_db.compat import (
 )
 from django_tasks_db.models import DBTaskResult
 from django_tasks_db.utils import exclusive_transaction, is_locked_database_exception
+from django_tasks_db.worker_status import WorkerStatus
 
 logger = logging.getLogger("django_tasks_db")
 
@@ -64,6 +64,11 @@ class Worker:
         self._run_tasks = 0
 
         self.worker_id = worker_id
+
+        self.status = WorkerStatus(
+            worker_id=self.worker_id,
+            lock_file=self.lock_file,
+        )
 
     def shutdown(self, signum: int, frame: FrameType | None) -> None:
         if not self.running:
@@ -101,19 +106,15 @@ class Worker:
             # Add a random small delay before starting to avoid a thundering herd
             time.sleep(random.random())  # noqa: S311
 
-        if self.lock_file is None:
-            self._run()
-        else:
-            with self.lock_file.open("ab") as f:
-                # Hold an exclusive lock for the life of the worker
-                if not locks.lock(f, locks.LOCK_EX | locks.LOCK_NB):
-                    raise CommandError(
-                        "Cannot lock file - is another worker already running?"
-                    )
-                self._run()
+        if not self.status.mark_started():
+            raise CommandError(
+                "Failed to mark worker as started - is another worker already running?"
+            )
 
-            # Clean up the lock file when exiting gracefully
-            self.lock_file.unlink()
+        self._run()
+
+        if not self.status.mark_stopped():
+            raise CommandError("Failed to mark worker as stopped.")
 
     def _run(self) -> None:
         logger.info(
