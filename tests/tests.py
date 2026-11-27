@@ -605,13 +605,7 @@ class DatabaseBackendWorkerTestCase(TransactionTestCase):
         logger = logging.getLogger("django_tasks_db")
         tasks_logger = logging.getLogger(LOGGER)
 
-        call_command(
-            "db_worker",
-            batch=True,
-            interval=0,
-            startup_delay=False,
-            worker_id=self.worker_id,
-        )
+        self.run_worker(verbosity=None, stdout=StringIO())
 
         self.assertEqual(logger.level, logging.INFO)
         self.assertEqual(tasks_logger.level, logging.INFO)
@@ -628,16 +622,9 @@ class DatabaseBackendWorkerTestCase(TransactionTestCase):
             with self.subTest(verbosity=verbosity):
                 logger.setLevel(logging.WARNING)
                 tasks_logger.setLevel(logging.ERROR)
-                call_command(
-                    "db_worker",
-                    "--verbosity",
-                    str(verbosity),
-                    batch=True,
-                    interval=0,
-                    startup_delay=False,
-                    worker_id=self.worker_id,
-                    stdout=StringIO(),
-                )
+
+                self.run_worker(verbosity=verbosity, stdout=StringIO())
+
                 self.assertEqual(logger.level, expected_level)
                 self.assertEqual(tasks_logger.level, expected_level)
 
@@ -657,14 +644,7 @@ class DatabaseBackendWorkerTestCase(TransactionTestCase):
         tasks_logger = logging.getLogger(LOGGER)
         logger.setLevel(logging.WARNING)
 
-        call_command(
-            "db_worker",
-            batch=True,
-            interval=0,
-            startup_delay=False,
-            worker_id=self.worker_id,
-            stdout=StringIO(),
-        )
+        self.run_worker(verbosity=None, stdout=StringIO())
 
         self.assertEqual(logger.level, logging.WARNING)
         self.assertEqual(tasks_logger.level, logging.INFO)
