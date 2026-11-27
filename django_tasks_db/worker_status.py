@@ -1,3 +1,4 @@
+import sys
 from contextlib import ExitStack
 from pathlib import Path
 
@@ -25,6 +26,28 @@ class WorkerStatus:
             if not locks.lock(f, locks.LOCK_EX | locks.LOCK_NB):
                 return False
 
+        return True
+
+    def ping(self) -> bool:
+        """
+        Report that the worker is still alive (has checked for a task).
+        """
+        if self.lock_file is not None:
+            self.lock_file.touch()
+        return True
+
+    def mark_running_task(self, task_id: str) -> bool:
+        """
+        Report that the worker is currently running a task.
+        """
+        if self.lock_file is not None and sys.platform != "win32":
+            self.lock_file.write_text(task_id)
+        return True
+
+    def mark_not_running_task(self) -> bool:
+        """
+        Report that the worker is not running a task anymore.
+        """
         return True
 
     def mark_stopped(self) -> bool:

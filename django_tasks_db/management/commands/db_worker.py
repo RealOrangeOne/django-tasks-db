@@ -127,6 +127,8 @@ class Worker:
             # Check for dropped/expired connections right after waking up
             close_old_connections()
 
+            self.status.ping()
+
             tasks = DBTaskResult.objects.ready().filter(backend_name=self.backend_name)
             if not self.process_all_queues:
                 tasks = tasks.filter(queue_name__in=self.queue_names)
@@ -186,6 +188,7 @@ class Worker:
         """
         try:
             self.running_task = True
+            self.status.mark_running_task(str(db_task_result.id))
             task = db_task_result.task
             task_result = db_task_result.task_result
 
@@ -223,6 +226,7 @@ class Worker:
         finally:
             self.running_task = False
             self._run_tasks += 1
+            self.status.mark_not_running_task()
 
 
 def valid_backend_name(val: str) -> str:

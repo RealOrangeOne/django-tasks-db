@@ -1934,6 +1934,35 @@ class DatabaseWorkerProcessTestCase(TransactionTestCase):
 
         call_command("db_worker_healthcheck", lock_file, stdout=StringIO())
 
+    @skipIf(
+        sys.platform == "win32",
+        "Cannot read locked files from another process on Windows",
+    )
+    def test_lock_file_contains_task_id(self) -> None:
+        lock_file = self.temp_dir / "worker.lock"
+        result = test_tasks.sleep_for.enqueue(2)
+
+        self.start_worker(lock_file=lock_file)
+
+        self.wait_for_running(result)
+
+        self.assertEqual(lock_file.read_text(), f"{result.id}")
+
+    def test_lock_file_touched(self) -> None:
+        lock_file = self.temp_dir / "worker.lock"
+
+        test_tasks.sleep_for.enqueue(0.5)
+        second_result = test_tasks.sleep_for.enqueue(0.1)
+
+        self.start_worker(["--batch"], lock_file=lock_file)
+        worker_started = time.time()
+
+        self.wait_for_running(second_result)
+
+        # A ping will have occurred to retrieve the second result,
+        # so the mtime will be newer than it was when the worker first started
+        self.assertGreater(lock_file.stat().st_mtime, worker_started)
+
 
 class DatabaseWorkerHealthcheckTestCase(SimpleTestCase):
     healthcheck = staticmethod(
@@ -1966,6 +1995,19 @@ class DatabaseWorkerHealthcheckTestCase(SimpleTestCase):
 
         with self.assertRaisesMessage(CommandError, "No worker is running"):
             self.healthcheck(lock_file, stdout=StringIO())
+
+    def test_old_file(self) -> None:
+        lock_file = self.temp_dir / "worker.lock"
+
+        with lock_file.open("ab") as f:
+            locks.lock(f, locks.LOCK_EX)
+
+            os.utime(lock_file, (time.time(), time.time() - 5))
+
+            self.healthcheck(lock_file, max_age=10, stdout=StringIO())
+
+            with self.assertRaisesMessage(CommandError, "Lock file is too old"):
+                self.healthcheck(lock_file, max_age=1, stdout=StringIO())
 
 
 class CompatTestCase(SimpleTestCase):
