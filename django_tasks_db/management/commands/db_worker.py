@@ -68,6 +68,7 @@ class Worker:
         self.status = WorkerStatus(
             worker_id=self.worker_id,
             lock_file=self.lock_file,
+            sd_socket_path=os.environ.get("NOTIFY_SOCKET"),
         )
 
     def shutdown(self, signum: int, frame: FrameType | None) -> None:

@@ -2,7 +2,9 @@ import contextlib
 import copy
 import logging
 import os
+import select
 import signal
+import socket
 import subprocess
 import sys
 import tempfile
@@ -73,6 +75,7 @@ from django_tasks_db.utils import (
     exclusive_transaction,
     normalize_uuid,
 )
+from django_tasks_db.worker_status import SDNotify
 from tests import tasks as test_tasks
 
 WORKER_WAIT_TIMEOUT = 5
@@ -1218,6 +1221,41 @@ class DatabaseBackendWorkerTestCase(TransactionTestCase):
         self.assertEqual(db_task_result.status, TaskResultStatus.FAILED)
         self.assertIn("ImportError", db_task_result.traceback)
 
+    @skipIf(sys.platform == "win32", "Unix socket don't work on Windows")
+    def test_sd_notify(self) -> None:
+        with (
+            tempfile.TemporaryDirectory() as temp_dir,
+            socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as sock,
+        ):
+            sock_path = os.path.join(temp_dir, "sd.sock")
+            sock.bind(sock_path)
+            sock.settimeout(1)
+
+            with mock.patch.dict(os.environ, {"NOTIFY_SOCKET": sock_path}):
+                result_1 = test_tasks.noop_task.enqueue()
+                result_2 = test_tasks.noop_task.enqueue()
+
+                self.run_worker()
+
+                messages = []
+                while select.select([sock], [], [], 0)[0]:
+                    messages.append(sock.recv(4096).decode())
+
+        self.assertEqual(
+            messages,
+            [
+                "READY=1",
+                "WATCHDOG=1",
+                f"STATUS=Running {result_1.id}",
+                "STATUS=",
+                "WATCHDOG=1",
+                f"STATUS=Running {result_2.id}",
+                "STATUS=",
+                "WATCHDOG=1",
+                "STOPPING=1",
+            ],
+        )
+
 
 @override_settings(
     TASKS={
@@ -2160,3 +2198,69 @@ class AdminTestCase(TestCase):
         result = self.admin.display_run_after(db_task_result)
 
         self.assertEqual(result, expected_run_after)
+
+
+@skipIf(sys.platform == "win32", "Requires unix sockets")
+class SDNotifyTestCase(SimpleTestCase):
+    def setUp(self) -> None:
+        assert hasattr(socket, "AF_UNIX")  # placate mypy
+
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp_dir.cleanup)
+        self.socket_path = os.path.join(self.temp_dir.name, "sd.sock")
+
+        self.socket = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+        self.addCleanup(self.socket.close)
+        self.socket.bind(self.socket_path)
+        self.socket.settimeout(1)
+
+        self.sd_notify = SDNotify(self.socket_path)
+
+    def get_messages(self) -> list[str]:
+        messages = []
+
+        while select.select([self.socket], [], [], 0)[0]:
+            messages.append(self.socket.recv(4096).decode())
+
+        return messages
+
+    def test_no_messages_on_start(self) -> None:
+        self.assertEqual(self.get_messages(), [])
+
+    def test_ready(self) -> None:
+        self.assertTrue(self.sd_notify.ready())
+        self.assertEqual(self.get_messages(), ["READY=1"])
+
+    def test_stopping(self) -> None:
+        self.assertTrue(self.sd_notify.stopping())
+        self.assertEqual(self.get_messages(), ["STOPPING=1"])
+
+    def test_watchdog(self) -> None:
+        self.assertTrue(self.sd_notify.watchdog())
+        self.assertEqual(self.get_messages(), ["WATCHDOG=1"])
+
+    def test_status(self) -> None:
+        status = get_random_string(10)
+        self.assertTrue(self.sd_notify.status(status))
+        self.assertEqual(self.get_messages(), [f"STATUS={status}"])
+
+    def test_repeat_calls_buffer(self) -> None:
+        for i in range(3):
+            self.assertTrue(self.sd_notify.status(str(i)))
+
+        self.assertEqual(self.get_messages(), ["STATUS=0", "STATUS=1", "STATUS=2"])
+
+    def test_abstract_namespace_socket(self) -> None:
+        self.assertTrue(
+            SDNotify(f"@{self.socket_path}").socket_address.startswith("\0")
+        )
+
+    def test_missing_socket(self) -> None:
+        os.remove(self.socket_path)
+
+        with self.assertLogs("django_tasks_db") as captured_logs:
+            self.assertFalse(self.sd_notify.watchdog())
+
+        self.assertEqual(len(captured_logs.output), 1)
+        self.assertIn("Failed to send to sd_notify socket", captured_logs.output[0])
+        self.assertIn("FileNotFoundError", captured_logs.output[0])
