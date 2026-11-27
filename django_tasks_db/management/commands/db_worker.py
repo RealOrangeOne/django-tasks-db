@@ -97,6 +97,10 @@ class Worker:
             signal.signal(signal.SIGQUIT, signal.SIG_DFL)
 
     def run(self) -> None:
+        if self.startup_delay and self.interval:
+            # Add a random small delay before starting to avoid a thundering herd
+            time.sleep(random.random())  # noqa: S311
+
         if self.lock_file is None:
             self._run()
         else:
@@ -117,10 +121,6 @@ class Worker:
             self.worker_id,
             ",".join(self.queue_names),
         )
-
-        if self.startup_delay and self.interval:
-            # Add a random small delay before starting to avoid a thundering herd
-            time.sleep(random.random())  # noqa: S311
 
         while self.running:
             # Check for dropped/expired connections right after waking up
