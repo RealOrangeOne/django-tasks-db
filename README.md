@@ -65,6 +65,10 @@ To check the health of the worker using the lock file, use the `db_worker_health
 
 `db_worker` supports the [`sd_notify(3)`](https://www.freedesktop.org/software/systemd/man/254/sd_pid_notify.html) API, for communicating worker status to `systemd` (or other compatible tools). Set `Notify=true` in your `.service` to enable.
 
+##### S6 startup notifications
+
+`db_worker` supports S6's [service startup notifications](https://skarnet.org/software/s6/notifywhenup.html) API. Add the file descriptor number to the service's `notification-fd` file, and pass it to `--s6-notify-fd`. S6 will now be told once the worker has started.
+
 ### Pruning old tasks
 
 After a while, tasks may start to build up in your database. This can be managed using the `prune_db_task_results` management command, which deletes completed tasks according to the given retention policy. Check the `--help` for the available options.

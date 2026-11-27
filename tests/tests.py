@@ -34,6 +34,8 @@ from django.test.testcases import _deferredSkip  # type:ignore[attr-defined]
 from django.utils import timezone
 from django.utils.crypto import get_random_string
 
+from django_tasks_db.worker_status import S6Notify
+
 try:
     from django.tasks import TaskResultStatus, default_task_backend, task_backends
     from django.tasks.base import Task
@@ -1015,6 +1017,15 @@ class DatabaseBackendWorkerTestCase(TransactionTestCase):
                 )
         self.assertIn("Worker id must not be empty", output.getvalue())
 
+    def test_bad_s6_notify_fd(self) -> None:
+        output = StringIO()
+        with redirect_stderr(output):
+            with self.assertRaises(SystemExit):
+                execute_from_command_line(
+                    ["django-admin", "db_worker", "--s6-notify-fd", "999"]
+                )
+        self.assertIn("Bad file descriptor", output.getvalue())
+
     def test_run_after(self) -> None:
         result = test_tasks.noop_task.using(
             run_after=timezone.now() + timedelta(hours=10)
@@ -1762,6 +1773,7 @@ class DatabaseWorkerProcessTestCase(TransactionTestCase):
         worker_id: str | None = None,
         lock_file: Path | None = None,
         wait: bool = True,
+        popen_kwargs: dict | None = None,
     ) -> subprocess.Popen:
         if args is None:
             args = []
@@ -1771,6 +1783,9 @@ class DatabaseWorkerProcessTestCase(TransactionTestCase):
 
         if lock_file is None:
             lock_file = self.temp_dir / f"{get_random_string(8)}.lock"
+
+        if popen_kwargs is None:
+            popen_kwargs = {}
 
         p = subprocess.Popen(
             [
@@ -1797,6 +1812,7 @@ class DatabaseWorkerProcessTestCase(TransactionTestCase):
                 "IN_TEST": "",
             },
             text=True,
+            **popen_kwargs,
         )
         self.processes.append(p)
 
@@ -2054,6 +2070,21 @@ class DatabaseWorkerProcessTestCase(TransactionTestCase):
         # so the mtime will be newer than it was when the worker first started
         self.assertGreater(lock_file.stat().st_mtime, worker_started)
 
+    @skipIf(
+        sys.platform == "win32",
+        "Requires file descriptors",
+    )
+    def test_s6_ready(self) -> None:
+        read_fd, write_fd = os.pipe()
+        self.addCleanup(os.close, read_fd)
+
+        self.start_worker(
+            ["--batch", "--s6-notify-fd", str(write_fd)],
+            popen_kwargs={"pass_fds": [write_fd]},
+        )
+
+        self.assertEqual(os.read(read_fd, 16), b"\n")
+
 
 class DatabaseWorkerHealthcheckTestCase(SimpleTestCase):
     healthcheck = staticmethod(
@@ -2264,3 +2295,29 @@ class SDNotifyTestCase(SimpleTestCase):
         self.assertEqual(len(captured_logs.output), 1)
         self.assertIn("Failed to send to sd_notify socket", captured_logs.output[0])
         self.assertIn("FileNotFoundError", captured_logs.output[0])
+
+
+@skipIf(sys.platform == "win32", "Requires file descriptors")
+class S6NotifyTestCase(SimpleTestCase):
+    def setUp(self) -> None:
+        self.read_fd, self.write_fd = os.pipe()
+
+        self.addCleanup(os.close, self.read_fd)
+
+    def test_ready_writes_newline_and_closes(self) -> None:
+        s6 = S6Notify(self.write_fd)
+        self.assertTrue(s6.ready())
+        self.assertEqual(os.read(self.read_fd, 16), b"\n")
+        self.assertEqual(os.read(self.read_fd, 16), b"")
+
+    def test_ready_multiple_times(self) -> None:
+        s6 = S6Notify(self.write_fd)
+
+        self.assertTrue(s6.ready())
+
+        with self.assertLogs("django_tasks_db"):
+            self.assertFalse(s6.ready())
+
+    def test_bad_fd(self) -> None:
+        with self.assertLogs("django_tasks_db"):
+            self.assertFalse(S6Notify(9999).ready())

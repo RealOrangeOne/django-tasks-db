@@ -1,4 +1,5 @@
 import logging
+import os
 import socket
 import sys
 from contextlib import ExitStack
@@ -45,6 +46,24 @@ class SDNotify:
         return self._send(b"WATCHDOG=1")
 
 
+class S6Notify:
+    def __init__(self, fd: int) -> None:
+        self.fd = fd
+
+    def ready(self) -> bool:
+        try:
+            os.write(self.fd, b"\n")
+            return True
+        except OSError:
+            logger.exception("Failed to send S6 ready notification")
+            return False
+        finally:
+            try:
+                os.close(self.fd)
+            except OSError:
+                pass
+
+
 class WorkerStatus:
     """
     A class to help db_worker report its status.
@@ -56,6 +75,7 @@ class WorkerStatus:
         worker_id: str,
         lock_file: Path | None = None,
         sd_socket_path: str | None = None,
+        s6_notify_fd: int | None = None,
     ) -> None:
         self.worker_id = worker_id
         self.lock_file = lock_file
@@ -65,6 +85,8 @@ class WorkerStatus:
         self.sd_notify = (
             SDNotify(sd_socket_path) if sd_socket_path is not None else None
         )
+
+        self.s6_notify = S6Notify(s6_notify_fd) if s6_notify_fd is not None else None
 
     def mark_started(self) -> bool:
         """
@@ -78,6 +100,9 @@ class WorkerStatus:
 
         if self.sd_notify is not None:
             self.sd_notify.ready()
+
+        if self.s6_notify is not None:
+            self.s6_notify.ready()
 
         return True
 
