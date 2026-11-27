@@ -75,6 +75,8 @@ from django_tasks_db.utils import (
 )
 from tests import tasks as test_tasks
 
+WORKER_WAIT_TIMEOUT = 5
+
 
 def skipIfInMemoryDB() -> Any:  # noqa:N802
     return _deferredSkip(
@@ -1646,8 +1648,6 @@ class DatabaseBackendPruneTaskResultsTestCase(TransactionTestCase):
 )
 @skipIfInMemoryDB()
 class DatabaseWorkerProcessTestCase(TransactionTestCase):
-    WORKER_STARTUP_TIME = 1
-
     def setUp(self) -> None:
         self.processes: list[subprocess.Popen] = []
 
@@ -1671,12 +1671,17 @@ class DatabaseWorkerProcessTestCase(TransactionTestCase):
         *,
         debug: bool = False,
         worker_id: str | None = None,
+        lock_file: Path | None = None,
+        wait: bool = True,
     ) -> subprocess.Popen:
         if args is None:
             args = []
 
         if worker_id is None:
             worker_id = get_random_string(32)
+
+        if lock_file is None:
+            lock_file = self.temp_dir / f"{get_random_string(8)}.lock"
 
         p = subprocess.Popen(
             [
@@ -1689,6 +1694,8 @@ class DatabaseWorkerProcessTestCase(TransactionTestCase):
                 "--no-startup-delay",
                 "--worker-id",
                 worker_id,
+                "--lock-file",
+                str(lock_file),
                 *args,
             ],
             stdout=None if debug else subprocess.PIPE,
@@ -1701,7 +1708,39 @@ class DatabaseWorkerProcessTestCase(TransactionTestCase):
             text=True,
         )
         self.processes.append(p)
+
+        deadline = time.time() + WORKER_WAIT_TIMEOUT
+
+        while wait and p.poll() is None:
+            if lock_file.exists():
+                try:
+                    call_command("db_worker_healthcheck", lock_file, stdout=StringIO())
+                except CommandError:
+                    pass
+                else:
+                    break
+
+            if time.time() >= deadline:
+                self.fail(
+                    f"{lock_file} was not locked within {WORKER_WAIT_TIMEOUT} seconds"
+                )
+            time.sleep(0.1)
+
         return p
+
+    def wait_for_running(self, result: Any) -> None:
+        deadline = time.time() + WORKER_WAIT_TIMEOUT
+
+        while True:
+            result.refresh()
+            if result.status == TaskResultStatus.RUNNING:
+                return
+
+            if time.time() >= deadline:
+                self.fail(
+                    f"Task {result.id} was not running within {WORKER_WAIT_TIMEOUT} seconds"
+                )
+            time.sleep(0.1)
 
     def test_run_subprocess(self) -> None:
         result = test_tasks.noop_task.enqueue()
@@ -1719,11 +1758,9 @@ class DatabaseWorkerProcessTestCase(TransactionTestCase):
     def test_interrupt_no_tasks(self) -> None:
         process = self.start_worker()
 
-        time.sleep(self.WORKER_STARTUP_TIME)
-
         process.terminate()
 
-        process.wait(timeout=0.5)
+        process.wait(timeout=WORKER_WAIT_TIMEOUT)
         self.assertEqual(process.returncode, 0)
 
     @skipIf(sys.platform == "win32", "Cannot emulate CTRL-C on Windows")
@@ -1736,22 +1773,18 @@ class DatabaseWorkerProcessTestCase(TransactionTestCase):
                 result = test_tasks.sleep_for.enqueue(2)
                 self.assertEqual(DBTaskResult.objects.get(id=result.id).worker_ids, [])
 
-                self.assertGreater(result.args[0], self.WORKER_STARTUP_TIME)
+                self.assertLess(result.args[0], WORKER_WAIT_TIMEOUT)
 
                 process = self.start_worker()
 
-                # Make sure the task is running by now
-                time.sleep(self.WORKER_STARTUP_TIME)
-
-                result.refresh()
-                self.assertEqual(result.status, TaskResultStatus.RUNNING)
+                self.wait_for_running(result)
                 self.assertNotEqual(
                     DBTaskResult.objects.get(id=result.id).worker_ids, []
                 )
 
                 process.send_signal(sig)
 
-                process.wait(timeout=2)
+                process.wait(timeout=WORKER_WAIT_TIMEOUT)
 
                 self.assertEqual(process.returncode, 0)
 
@@ -1768,10 +1801,7 @@ class DatabaseWorkerProcessTestCase(TransactionTestCase):
 
         process = self.start_worker(worker_id=worker_id)
 
-        # Make sure the task is running by now
-        time.sleep(self.WORKER_STARTUP_TIME)
-
-        result.refresh()
+        self.wait_for_running(result)
         self.assertEqual(result.status, TaskResultStatus.RUNNING)
         self.assertEqual(DBTaskResult.objects.get(id=result.id).worker_ids, [worker_id])
 
@@ -1786,7 +1816,7 @@ class DatabaseWorkerProcessTestCase(TransactionTestCase):
 
         process.send_signal(signal.SIGINT)
 
-        process.wait(timeout=2)
+        process.wait(timeout=WORKER_WAIT_TIMEOUT)
 
         self.assertEqual(process.returncode, 0)
 
@@ -1803,15 +1833,12 @@ class DatabaseWorkerProcessTestCase(TransactionTestCase):
 
         process = self.start_worker()
 
-        # Make sure the task is running by now
-        time.sleep(self.WORKER_STARTUP_TIME)
-
-        result.refresh()
+        self.wait_for_running(result)
         self.assertEqual(result.status, TaskResultStatus.RUNNING)
 
         process.kill()
 
-        process.wait(timeout=2)
+        process.wait(timeout=WORKER_WAIT_TIMEOUT)
 
         self.assertEqual(process.returncode, -signal.SIGKILL)
 
@@ -1824,7 +1851,7 @@ class DatabaseWorkerProcessTestCase(TransactionTestCase):
         result = test_tasks.failing_task_system_exit.enqueue()
 
         process = self.start_worker(["--batch"])
-        process.wait(timeout=2)
+        process.wait(timeout=WORKER_WAIT_TIMEOUT)
 
         self.assertEqual(process.returncode, 0)
 
@@ -1836,7 +1863,7 @@ class DatabaseWorkerProcessTestCase(TransactionTestCase):
         result = test_tasks.failing_task_keyboard_interrupt.enqueue()
 
         process = self.start_worker(["--batch"])
-        process.wait(timeout=2)
+        process.wait(timeout=WORKER_WAIT_TIMEOUT)
 
         self.assertEqual(process.returncode, 0)
 
@@ -1848,12 +1875,11 @@ class DatabaseWorkerProcessTestCase(TransactionTestCase):
         results = [test_tasks.sleep_for.enqueue(0.1) for _ in range(10)]
 
         for _ in range(3):
-            self.start_worker(["--batch"])
-
-        time.sleep(self.WORKER_STARTUP_TIME)
+            # Don't wait for each worker, so they run concurrently
+            self.start_worker(["--batch"], wait=False)
 
         for process in self.processes:
-            process.wait(timeout=5)
+            process.wait(timeout=WORKER_WAIT_TIMEOUT)
             self.assertIsNotNone(process.returncode)
 
         for result in results:
@@ -1873,29 +1899,24 @@ class DatabaseWorkerProcessTestCase(TransactionTestCase):
 
     def test_lock_file_held_while_running(self) -> None:
         lock_file = self.temp_dir / "worker.lock"
-        self.start_worker(["--lock-file", str(lock_file)])
-
-        time.sleep(self.WORKER_STARTUP_TIME)
+        self.start_worker(lock_file=lock_file)
 
         call_command("db_worker_healthcheck", lock_file, stdout=StringIO())
 
     def test_lock_file_released_on_graceful_exit(self) -> None:
         lock_file = self.temp_dir / "worker.lock"
-        process = self.start_worker(["--batch", "--lock-file", str(lock_file)])
-        process.wait(timeout=5)
+        process = self.start_worker(["--batch"], lock_file=lock_file)
+        process.wait(timeout=WORKER_WAIT_TIMEOUT)
 
         self.assertEqual(process.returncode, 0)
         self.assertFalse(lock_file.is_file())
 
     def test_lock_file_released_on_kill(self) -> None:
         lock_file = self.temp_dir / "worker.lock"
-        process = self.start_worker(["--lock-file", str(lock_file)])
-
-        time.sleep(self.WORKER_STARTUP_TIME)
-        call_command("db_worker_healthcheck", lock_file, stdout=StringIO())
+        process = self.start_worker(lock_file=lock_file)
 
         process.kill()
-        process.wait(timeout=2)
+        process.wait(timeout=WORKER_WAIT_TIMEOUT)
 
         with self.assertRaisesMessage(CommandError, "No worker is running"):
             call_command("db_worker_healthcheck", lock_file)
@@ -1903,12 +1924,10 @@ class DatabaseWorkerProcessTestCase(TransactionTestCase):
     def test_lock_file_is_exclusive(self) -> None:
         lock_file = self.temp_dir / "worker.lock"
 
-        self.start_worker(["--lock-file", str(lock_file)])
+        self.start_worker(lock_file=lock_file)
 
-        time.sleep(self.WORKER_STARTUP_TIME)
-
-        second = self.start_worker(["--lock-file", str(lock_file)])
-        output, _ = second.communicate(timeout=1)
+        second = self.start_worker(lock_file=lock_file, wait=False)
+        output, _ = second.communicate(timeout=WORKER_WAIT_TIMEOUT)
 
         self.assertEqual(second.returncode, 1)
         self.assertIn("Cannot lock file", output)
@@ -1940,8 +1959,8 @@ class DatabaseWorkerHealthcheckTestCase(SimpleTestCase):
             self.healthcheck(lock_file, stdout=StringIO())
 
     def test_locked_file(self) -> None:
-        lock_file = lock_file = self.temp_dir / "worker.lock"
-        with open(lock_file, "ab") as f:
+        lock_file = self.temp_dir / "worker.lock"
+        with lock_file.open("ab") as f:
             locks.lock(f, locks.LOCK_EX)
             self.healthcheck(lock_file, stdout=StringIO())
 

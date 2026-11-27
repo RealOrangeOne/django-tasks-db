@@ -1,4 +1,5 @@
 from argparse import ArgumentParser
+from pathlib import Path
 
 from django.core.files import locks
 from django.core.management.base import BaseCommand, CommandError
@@ -8,11 +9,11 @@ class Command(BaseCommand):
     help = "Health check command to determine if a worker is currently running"
 
     def add_arguments(self, parser: ArgumentParser) -> None:
-        parser.add_argument("lock_file", help="The workers lock file path")
+        parser.add_argument("lock_file", type=Path, help="The workers lock file path")
 
-    def handle(self, *, lock_file: str, **options: object) -> None:
+    def handle(self, *, lock_file: Path, **options: object) -> None:
         try:
-            with open(lock_file, "rb") as f:
+            with lock_file.open("rb") as f:
                 if locks.lock(f, locks.LOCK_EX | locks.LOCK_NB):
                     raise CommandError("No worker is running")
         except FileNotFoundError:

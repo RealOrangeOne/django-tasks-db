@@ -6,6 +6,7 @@ import signal
 import sys
 import time
 from argparse import ArgumentParser, ArgumentTypeError, BooleanOptionalAction
+from pathlib import Path
 from types import FrameType
 
 from django.conf import settings
@@ -46,7 +47,7 @@ class Worker:
         max_tasks: int | None,
         worker_id: str,
         excluded_queue_names: list[str],
-        lock_file: str | None = None,
+        lock_file: Path | None = None,
     ):
         self.queue_names = queue_names
         self.process_all_queues = "*" in queue_names
@@ -99,7 +100,7 @@ class Worker:
         if self.lock_file is None:
             self._run()
         else:
-            with open(self.lock_file, "ab") as f:
+            with self.lock_file.open("ab") as f:
                 # Hold an exclusive lock for the life of the worker
                 if not locks.lock(f, locks.LOCK_EX | locks.LOCK_NB):
                     raise CommandError(
@@ -108,7 +109,7 @@ class Worker:
                 self._run()
 
             # Clean up the lock file when exiting gracefully
-            os.remove(self.lock_file)
+            self.lock_file.unlink()
 
     def _run(self) -> None:
         logger.info(
@@ -327,6 +328,7 @@ class Command(BaseCommand):
             "--lock-file",
             nargs="?",
             default=None,
+            type=Path,
             help="If provided, hold a lock on this file while the worker is running. Can be used with the db_worker_healthcheck command.",
         )
 
@@ -365,7 +367,7 @@ class Command(BaseCommand):
         max_tasks: int | None,
         worker_id: str,
         exclude_queues: str,
-        lock_file: str | None,
+        lock_file: Path | None,
         **options: dict,
     ) -> None:
         self.configure_logging(verbosity)
