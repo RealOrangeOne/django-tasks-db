@@ -192,7 +192,7 @@ class Worker:
             task = db_task_result.task
             task_result = db_task_result.task_result
 
-            backend_type = task.get_backend()
+            backend_type = type(task.get_backend())
 
             task_started.send(sender=backend_type, task_result=task_result)
             if task.takes_context:

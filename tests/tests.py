@@ -813,6 +813,54 @@ class DatabaseBackendWorkerTestCase(TransactionTestCase):
         self.assertEqual(result.return_value, 42)
         self.assertEqual(result.errors, [])
 
+    @contextlib.contextmanager
+    def _capture_worker_signals(
+        self,
+    ) -> Iterator[list[tuple[str, Any, TaskResultStatus]]]:
+        received: list[tuple[str, Any, TaskResultStatus]] = []
+
+        def on_started(sender: Any, task_result: Any, **kwargs: Any) -> None:
+            received.append(("started", sender, task_result.status))
+
+        def on_finished(sender: Any, task_result: Any, **kwargs: Any) -> None:
+            received.append(("finished", sender, task_result.status))
+
+        compat.task_started.connect(on_started, weak=False)
+        compat.task_finished.connect(on_finished, weak=False)
+        try:
+            yield received
+        finally:
+            compat.task_started.disconnect(on_started)
+            compat.task_finished.disconnect(on_finished)
+
+    def test_signals_sent_by_backend_class_on_success(self) -> None:
+        test_tasks.calculate_meaning_of_life.enqueue()
+
+        with self._capture_worker_signals() as received:
+            self.run_worker()
+
+        self.assertEqual(
+            received,
+            [
+                ("started", DatabaseBackend, TaskResultStatus.RUNNING),
+                ("finished", DatabaseBackend, TaskResultStatus.SUCCESSFUL),
+            ],
+        )
+
+    def test_signals_sent_by_backend_class_on_failure(self) -> None:
+        test_tasks.failing_task_value_error.enqueue()
+
+        with self._capture_worker_signals() as received:
+            self.run_worker()
+
+        self.assertEqual(
+            received,
+            [
+                ("started", DatabaseBackend, TaskResultStatus.RUNNING),
+                ("finished", DatabaseBackend, TaskResultStatus.FAILED),
+            ],
+        )
+
     def test_complex_exception(self) -> None:
         result = test_tasks.complex_exception.enqueue()
         self.assertEqual(DBTaskResult.objects.ready().count(), 1)
