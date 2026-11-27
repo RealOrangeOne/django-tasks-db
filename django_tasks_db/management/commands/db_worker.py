@@ -47,7 +47,8 @@ class Worker:
         max_tasks: int | None,
         worker_id: str,
         excluded_queue_names: list[str],
-        lock_file: Path | None = None,
+        lock_file: Path | None,
+        s6_notify_fd: int | None,
     ):
         self.queue_names = queue_names
         self.process_all_queues = "*" in queue_names
@@ -57,7 +58,6 @@ class Worker:
         self.backend_name = backend_name
         self.startup_delay = startup_delay
         self.max_tasks = max_tasks
-        self.lock_file = lock_file
 
         self.running = True
         self.running_task = False
@@ -67,8 +67,9 @@ class Worker:
 
         self.status = WorkerStatus(
             worker_id=self.worker_id,
-            lock_file=self.lock_file,
+            lock_file=lock_file,
             sd_socket_path=os.environ.get("NOTIFY_SOCKET"),
+            s6_notify_fd=s6_notify_fd,
         )
 
     def shutdown(self, signum: int, frame: FrameType | None) -> None:
@@ -260,6 +261,15 @@ def valid_max_tasks(val: str) -> int:
     return num
 
 
+def validate_fd(val: str) -> int:
+    fd = int(val)
+    try:
+        os.fstat(fd)
+    except OSError as e:
+        raise ArgumentTypeError(str(e)) from None
+    return fd
+
+
 def validate_worker_id(val: str) -> str:
     if not val:
         raise ArgumentTypeError("Worker id must not be empty")
@@ -341,6 +351,13 @@ class Command(BaseCommand):
             type=Path,
             help="If provided, hold a lock on this file while the worker is running. Can be used with the db_worker_healthcheck command.",
         )
+        parser.add_argument(
+            "--s6-notify-fd",
+            nargs="?",
+            default=None,
+            type=validate_fd,
+            help="File descriptor for S6's notification channel.",
+        )
 
     def configure_logging(self, verbosity: int | None) -> None:
         tasks_logger = logging.getLogger(TASKS_LOGGER)
@@ -378,6 +395,7 @@ class Command(BaseCommand):
         worker_id: str,
         exclude_queues: str,
         lock_file: Path | None,
+        s6_notify_fd: int | None,
         **options: dict,
     ) -> None:
         self.configure_logging(verbosity)
@@ -404,6 +422,7 @@ class Command(BaseCommand):
             worker_id=worker_id,
             excluded_queue_names=excluded_queue_names,
             lock_file=lock_file,
+            s6_notify_fd=s6_notify_fd,
         )
 
         if reload:
