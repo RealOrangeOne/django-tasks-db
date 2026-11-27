@@ -34,8 +34,6 @@ from django.test.testcases import _deferredSkip  # type:ignore[attr-defined]
 from django.utils import timezone
 from django.utils.crypto import get_random_string
 
-from django_tasks_db.worker_status import S6Notify
-
 try:
     from django.tasks import TaskResultStatus, default_task_backend, task_backends
     from django.tasks.base import Task
@@ -74,10 +72,11 @@ from django_tasks_db.management.commands.prune_db_task_results import (
 )
 from django_tasks_db.models import DBTaskResult, get_date_max
 from django_tasks_db.utils import (
+    IS_WINDOWS,
     exclusive_transaction,
     normalize_uuid,
 )
-from django_tasks_db.worker_status import SDNotify
+from django_tasks_db.worker_status import S6Notify, SDNotify
 from tests import tasks as test_tasks
 
 WORKER_WAIT_TIMEOUT = 5
@@ -1024,7 +1023,10 @@ class DatabaseBackendWorkerTestCase(TransactionTestCase):
                 execute_from_command_line(
                     ["django-admin", "db_worker", "--s6-notify-fd", "999"]
                 )
-        self.assertIn("Bad file descriptor", output.getvalue())
+        self.assertIn(
+            "The handle is invalid" if IS_WINDOWS else "Bad file descriptor",
+            output.getvalue(),
+        )
 
     def test_run_after(self) -> None:
         result = test_tasks.noop_task.using(
@@ -1232,8 +1234,10 @@ class DatabaseBackendWorkerTestCase(TransactionTestCase):
         self.assertEqual(db_task_result.status, TaskResultStatus.FAILED)
         self.assertIn("ImportError", db_task_result.traceback)
 
-    @skipIf(sys.platform == "win32", "Unix socket don't work on Windows")
+    @skipIf(IS_WINDOWS, "Unix socket don't work on Windows")
     def test_sd_notify(self) -> None:
+        assert hasattr(socket, "AF_UNIX")  # placate mypy
+
         with (
             tempfile.TemporaryDirectory() as temp_dir,
             socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as sock,
@@ -1875,7 +1879,7 @@ class DatabaseWorkerProcessTestCase(TransactionTestCase):
 
         self.assertEqual(result.status, TaskResultStatus.SUCCESSFUL)
 
-    @skipIf(sys.platform == "win32", "Terminate is always forceful on Windows")
+    @skipIf(IS_WINDOWS, "Terminate is always forceful on Windows")
     def test_interrupt_no_tasks(self) -> None:
         process = self.start_worker()
 
@@ -1884,7 +1888,7 @@ class DatabaseWorkerProcessTestCase(TransactionTestCase):
         process.wait(timeout=WORKER_WAIT_TIMEOUT)
         self.assertEqual(process.returncode, 0)
 
-    @skipIf(sys.platform == "win32", "Cannot emulate CTRL-C on Windows")
+    @skipIf(IS_WINDOWS, "Cannot emulate CTRL-C on Windows")
     def test_interrupt_signals(self) -> None:
         for sig in [
             signal.SIGINT,  # ctrl-c
@@ -1913,7 +1917,7 @@ class DatabaseWorkerProcessTestCase(TransactionTestCase):
 
                 self.assertEqual(result.status, TaskResultStatus.SUCCESSFUL)
 
-    @skipIf(sys.platform == "win32", "Cannot emulate CTRL-C on Windows")
+    @skipIf(IS_WINDOWS, "Cannot emulate CTRL-C on Windows")
     def test_repeat_ctrl_c(self) -> None:
         result = test_tasks.hang.enqueue()
         self.assertEqual(DBTaskResult.objects.get(id=result.id).worker_ids, [])
@@ -1945,7 +1949,7 @@ class DatabaseWorkerProcessTestCase(TransactionTestCase):
         self.assertEqual(result.status, TaskResultStatus.FAILED)
         self.assertEqual(result.errors[0].exception_class, SystemExit)
 
-    @skipIf(sys.platform == "win32", "Windows doesn't support SIGKILL")
+    @skipIf(IS_WINDOWS, "Windows doesn't support SIGKILL")
     def test_kill(self) -> None:
         # Required to keep mypy happy
         assert hasattr(signal, "SIGKILL")
@@ -2056,7 +2060,7 @@ class DatabaseWorkerProcessTestCase(TransactionTestCase):
         call_command("db_worker_healthcheck", lock_file, stdout=StringIO())
 
     @skipIf(
-        sys.platform == "win32",
+        IS_WINDOWS,
         "Cannot read locked files from another process on Windows",
     )
     def test_lock_file_contains_task_id(self) -> None:
@@ -2089,7 +2093,7 @@ class DatabaseWorkerProcessTestCase(TransactionTestCase):
         self.assertGreater(lock_file.stat().st_mtime, worker_started)
 
     @skipIf(
-        sys.platform == "win32",
+        IS_WINDOWS,
         "Requires file descriptors",
     )
     def test_s6_ready(self) -> None:
@@ -2249,7 +2253,7 @@ class AdminTestCase(TestCase):
         self.assertEqual(result, expected_run_after)
 
 
-@skipIf(sys.platform == "win32", "Requires unix sockets")
+@skipIf(IS_WINDOWS, "Requires unix sockets")
 class SDNotifyTestCase(SimpleTestCase):
     def setUp(self) -> None:
         assert hasattr(socket, "AF_UNIX")  # placate mypy
@@ -2315,7 +2319,7 @@ class SDNotifyTestCase(SimpleTestCase):
         self.assertIn("FileNotFoundError", captured_logs.output[0])
 
 
-@skipIf(sys.platform == "win32", "Requires file descriptors")
+@skipIf(IS_WINDOWS, "Requires file descriptors")
 class S6NotifyTestCase(SimpleTestCase):
     def setUp(self) -> None:
         self.read_fd, self.write_fd = os.pipe()

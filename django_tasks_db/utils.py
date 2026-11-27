@@ -1,3 +1,4 @@
+import sys
 import time
 from collections.abc import Callable, Generator
 from contextlib import contextmanager
@@ -11,6 +12,9 @@ from typing_extensions import ParamSpec
 
 T = TypeVar("T")
 P = ParamSpec("P")
+
+
+IS_WINDOWS = sys.platform == "win32"
 
 
 @contextmanager
