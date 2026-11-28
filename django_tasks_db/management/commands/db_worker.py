@@ -6,6 +6,7 @@ import signal
 import sys
 import time
 from argparse import ArgumentParser, ArgumentTypeError, BooleanOptionalAction
+from dataclasses import replace
 from pathlib import Path
 from types import FrameType
 
@@ -198,6 +199,7 @@ class Worker:
 
             task_started.send(sender=backend_type, task_result=task_result)
             if task.takes_context:
+                task_result = replace(task_result, _ping_callback=self.status.ping)
                 return_value = task.call(
                     TaskContext(task_result=task_result),
                     *task_result.args,

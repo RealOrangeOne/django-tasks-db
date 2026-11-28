@@ -1,4 +1,5 @@
-from dataclasses import dataclass
+from collections.abc import Callable
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, TypeVar
 
 from django import VERSION
@@ -29,6 +30,14 @@ P = ParamSpec("P")
 @dataclass(frozen=True, slots=PY311, kw_only=True)  # type: ignore[literal-required]
 class TaskResult(BaseTaskResult[P, T]):  # type: ignore[misc]
     db_result: "DBTaskResult"
+    _ping_callback: Callable[[], bool] | None = field(
+        default=None, repr=False, compare=False
+    )
+
+    def ping(self) -> bool:
+        if self._ping_callback is None:
+            raise RuntimeError("No worker ping callback is configured")
+        return self._ping_callback()
 
 
 class DatabaseBackend(BaseTaskBackend):

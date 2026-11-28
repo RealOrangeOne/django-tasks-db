@@ -2063,7 +2063,34 @@ class DatabaseWorkerProcessTestCase(TransactionTestCase):
         IS_WINDOWS,
         "Cannot read locked files from another process on Windows",
     )
-    def test_lock_file_contains_task_id(self) -> None:
+    def test_lock_file_content_is_stable(self) -> None:
+        lock_file = self.temp_dir / "worker.lock"
+
+        before_first_started = time.time()
+        self.start_worker(lock_file=lock_file)
+
+        self.assertGreater(lock_file.stat().st_mtime, before_first_started)
+        first_task_file_path = Path(lock_file.read_text())
+
+        before_second_started = time.time()
+        second = self.start_worker(lock_file=lock_file, wait=False)
+        output, _ = second.communicate(timeout=WORKER_WAIT_TIMEOUT)
+
+        self.assertEqual(second.returncode, 1)
+        self.assertIn("Failed to mark worker as started", output)
+
+        call_command("db_worker_healthcheck", lock_file, stdout=StringIO())
+
+        second_task_file_path = Path(lock_file.read_text())
+
+        self.assertEqual(second_task_file_path, first_task_file_path)
+        self.assertGreater(lock_file.stat().st_mtime, before_second_started)
+
+    @skipIf(
+        IS_WINDOWS,
+        "Cannot read locked files from another process on Windows",
+    )
+    def test_lock_file_contains_task_file(self) -> None:
         lock_file = self.temp_dir / "worker.lock"
         result = test_tasks.sleep_for.enqueue(1)
 
@@ -2071,11 +2098,15 @@ class DatabaseWorkerProcessTestCase(TransactionTestCase):
 
         self.wait_for_running(result)
 
-        self.assertEqual(lock_file.read_text(), f"{result.id}")
+        task_file_path = Path(lock_file.read_text())
+        self.assertTrue(task_file_path.name.endswith(".tid"))
+
+        task_id = task_file_path.read_text()
+        self.assertEqual(task_id, f"{result.id}")
 
         self.wait_for_finished(result)
 
-        self.assertEqual(lock_file.read_text(), "")
+        self.assertEqual(task_file_path.read_text(), "")
 
     def test_lock_file_touched(self) -> None:
         lock_file = self.temp_dir / "worker.lock"
@@ -2091,6 +2122,43 @@ class DatabaseWorkerProcessTestCase(TransactionTestCase):
         # A ping will have occurred to retrieve the second result,
         # so the mtime will be newer than it was when the worker first started
         self.assertGreater(lock_file.stat().st_mtime, worker_started)
+
+    def test_pings_from_long_running_task(self) -> None:
+        lock_file = self.temp_dir / "worker.lock"
+        samples = set()
+
+        first_result = test_tasks.ping_from_task.enqueue(0.2)
+        second_result = test_tasks.sleep_for.enqueue(0.5)
+
+        before_worker_started = time.time()
+        self.start_worker(["--batch"], lock_file=lock_file)
+        worker_started = lock_file.stat().st_mtime
+
+        self.wait_for_running(first_result)
+        first_running = time.time()
+        while not first_result.is_finished:
+            first_result.refresh()
+            time.sleep(0.05)
+            samples.add(lock_file.stat().st_mtime)
+        samples.discard(worker_started)
+
+        self.wait_for_running(second_result)
+        second_running = time.time()
+
+        samples.add(lock_file.stat().st_mtime)
+
+        self.assertGreater(len(samples), 2)
+        self.assertGreater(worker_started, before_worker_started)
+        self.assertGreater(first_running, worker_started)
+        previous = before_worker_started
+        for n, sample in enumerate(sorted(samples)):
+            self.assertLess(sample, second_running)
+            self.assertGreater(sample, before_worker_started)
+            self.assertGreater(sample, worker_started)
+            if n:
+                self.assertGreater(sample, first_running)
+            self.assertGreater(sample, previous)
+            previous = sample
 
     @skipIf(
         IS_WINDOWS,
