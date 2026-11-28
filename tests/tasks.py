@@ -80,6 +80,24 @@ def get_task_id(context: TaskContext) -> str:
 
 
 @task(takes_context=True)
+def ping_from_task(context: TaskContext, seconds: float = 1.0) -> tuple[bool, ...]:
+    from django_tasks_db.backend import TaskResult
+
+    assert isinstance(context, TaskContext)
+    task_result = context.task_result
+    assert isinstance(task_result, TaskResult)
+    ping = task_result.ping
+
+    ping1_result = ping()
+    time.sleep(seconds)
+    ping2_result = ping()
+    time.sleep(seconds)
+    ping3_result = ping()
+    time.sleep(seconds)
+    return ping1_result, ping2_result, ping3_result
+
+
+@task(takes_context=True)
 def test_context(context: TaskContext, attempt: int) -> None:
     assert isinstance(context, TaskContext)
     assert context.attempt == attempt

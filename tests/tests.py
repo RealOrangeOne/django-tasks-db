@@ -2123,6 +2123,43 @@ class DatabaseWorkerProcessTestCase(TransactionTestCase):
         # so the mtime will be newer than it was when the worker first started
         self.assertGreater(lock_file.stat().st_mtime, worker_started)
 
+    def test_pings_from_long_running_task(self) -> None:
+        lock_file = self.temp_dir / "worker.lock"
+        samples = set()
+
+        first_result = test_tasks.ping_from_task.enqueue(0.2)
+        second_result = test_tasks.sleep_for.enqueue(0.5)
+
+        before_worker_started = time.time()
+        self.start_worker(["--batch"], lock_file=lock_file)
+        worker_started = lock_file.stat().st_mtime
+
+        self.wait_for_running(first_result)
+        first_running = time.time()
+        while not first_result.is_finished:
+            first_result.refresh()
+            time.sleep(0.05)
+            samples.add(lock_file.stat().st_mtime)
+        samples.discard(worker_started)
+
+        self.wait_for_running(second_result)
+        second_running = time.time()
+
+        samples.add(lock_file.stat().st_mtime)
+
+        self.assertGreater(len(samples), 2)
+        self.assertGreater(worker_started, before_worker_started)
+        self.assertGreater(first_running, worker_started)
+        previous = before_worker_started
+        for n, sample in enumerate(sorted(samples)):
+            self.assertLess(sample, second_running)
+            self.assertGreater(sample, before_worker_started)
+            self.assertGreater(sample, worker_started)
+            if n:
+                self.assertGreater(sample, first_running)
+            self.assertGreater(sample, previous)
+            previous = sample
+
     @skipIf(
         IS_WINDOWS,
         "Requires file descriptors",
