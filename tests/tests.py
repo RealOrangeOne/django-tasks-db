@@ -2063,7 +2063,34 @@ class DatabaseWorkerProcessTestCase(TransactionTestCase):
         IS_WINDOWS,
         "Cannot read locked files from another process on Windows",
     )
-    def test_lock_file_contains_task_id(self) -> None:
+    def test_lock_file_content_is_stable(self) -> None:
+        lock_file = self.temp_dir / "worker.lock"
+
+        before_first_started = time.time()
+        self.start_worker(lock_file=lock_file)
+
+        self.assertGreater(lock_file.stat().st_mtime, before_first_started)
+        first_task_file_path = Path(lock_file.read_text())
+
+        before_second_started = time.time()
+        second = self.start_worker(lock_file=lock_file, wait=False)
+        output, _ = second.communicate(timeout=WORKER_WAIT_TIMEOUT)
+
+        self.assertEqual(second.returncode, 1)
+        self.assertIn("Failed to mark worker as started", output)
+
+        call_command("db_worker_healthcheck", lock_file, stdout=StringIO())
+
+        second_task_file_path = Path(lock_file.read_text())
+
+        self.assertEqual(second_task_file_path, first_task_file_path)
+        self.assertGreater(lock_file.stat().st_mtime, before_second_started)
+
+    @skipIf(
+        IS_WINDOWS,
+        "Cannot read locked files from another process on Windows",
+    )
+    def test_lock_file_contains_task_file(self) -> None:
         lock_file = self.temp_dir / "worker.lock"
         result = test_tasks.sleep_for.enqueue(1)
 
@@ -2071,11 +2098,15 @@ class DatabaseWorkerProcessTestCase(TransactionTestCase):
 
         self.wait_for_running(result)
 
-        self.assertEqual(lock_file.read_text(), f"{result.id}")
+        task_file_path = Path(lock_file.read_text())
+        self.assertTrue(task_file_path.name.endswith(".tid"))
+
+        task_id = task_file_path.read_text()
+        self.assertEqual(task_id, f"{result.id}")
 
         self.wait_for_finished(result)
 
-        self.assertEqual(lock_file.read_text(), "")
+        self.assertEqual(task_file_path.read_text(), "")
 
     def test_lock_file_touched(self) -> None:
         lock_file = self.temp_dir / "worker.lock"

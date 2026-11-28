@@ -1,12 +1,13 @@
 import logging
 import os
 import socket
-from contextlib import ExitStack
+import tempfile
+from collections.abc import Iterator
+from contextlib import ExitStack, contextmanager, suppress
 from pathlib import Path
+from tempfile import NamedTemporaryFile
 
 from django.core.files import locks
-
-from .utils import IS_WINDOWS
 
 logger = logging.getLogger("django_tasks_db")
 
@@ -82,23 +83,77 @@ class WorkerStatus:
     ) -> None:
         self.worker_id = worker_id
         self.lock_file = lock_file
+        self.task_file = None
 
         self.running_stack = ExitStack()
 
-        self.sd_notify = (
-            SDNotify(sd_socket_path) if sd_socket_path is not None else None
-        )
+        if lock_file is not None:
+            temp_file = self.running_stack.enter_context(
+                self._temp_file(suffix=".tid"),
+            )
+            self.task_file = Path(temp_file.name)
+            temp_file.close()
 
-        self.s6_notify = S6Notify(s6_notify_fd) if s6_notify_fd is not None else None
+        self.sd_notify = None if sd_socket_path is None else SDNotify(sd_socket_path)
+
+        self.s6_notify = None if s6_notify_fd is None else S6Notify(s6_notify_fd)
+
+    @contextmanager
+    def _temp_file(
+        self, suffix: str | None = None
+    ) -> Iterator[tempfile._TemporaryFileWrapper]:
+        lock_file = self.lock_file
+        if lock_file is None:
+            raise RuntimeError("Cannot create a temporary file without a lock file")
+
+        prefix = lock_file.with_suffix("").name + "."
+        lock_file.parent.mkdir(exist_ok=True, parents=True)
+        try:
+            temp_file = NamedTemporaryFile(  # type: ignore[call-overload, unused-ignore]
+                delete=True,
+                delete_on_close=False,
+                dir=lock_file.parent,
+                prefix=prefix,
+                suffix=suffix,
+            )
+        except TypeError:
+            temp_file = NamedTemporaryFile(
+                delete=False,
+                dir=lock_file.parent,
+                prefix=prefix,
+                suffix=suffix,
+            )
+            try:
+                yield temp_file
+            finally:
+                temp_file.close()
+                Path(temp_file.name).unlink(missing_ok=True)
+        else:
+            yield temp_file
 
     def mark_started(self) -> bool:
         """
         Report the worker has started up and is about to check for tasks to execute.
         """
         if self.lock_file is not None:
+            # An OS that is not Windows can read the exact path from this locked file.
+            # Windows OS reliably cleans up the *.tid file, so it should be able to find
+            # it on the filesystem without reading this lock file (which it cannot).
+            previous = None
+            resolved = ""
+            if self.task_file:
+                resolved = str(self.task_file.resolve(strict=False))
+            with suppress(OSError):
+                previous = self.lock_file.read_text()
+            with suppress(OSError):
+                self.lock_file.write_text(resolved)
             f = self.running_stack.enter_context(self.lock_file.open("ab"))
             # Grab an exclusive lock (if possible)
             if not locks.lock(f, locks.LOCK_EX | locks.LOCK_NB):
+                f.close()
+                if previous is not None:
+                    with suppress(OSError):
+                        self.lock_file.write_text(previous)
                 return False
 
         if self.sd_notify is not None:
@@ -125,8 +180,8 @@ class WorkerStatus:
         """
         Report that the worker is currently running a task.
         """
-        if self.lock_file is not None and not IS_WINDOWS:
-            self.lock_file.write_text(task_id)
+        if self.task_file is not None:
+            self.task_file.write_text(task_id)
 
         if self.sd_notify is not None:
             self.sd_notify.status(f"Running {task_id}")
@@ -137,8 +192,8 @@ class WorkerStatus:
         """
         Report that the worker is not running a task anymore.
         """
-        if self.lock_file is not None and not IS_WINDOWS:
-            self.lock_file.write_text("")
+        if self.task_file is not None:
+            self.task_file.write_text("")
 
         if self.sd_notify is not None:
             self.sd_notify.status("")
